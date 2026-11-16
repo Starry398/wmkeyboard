@@ -30,10 +30,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      # starry/ is tracked on main but absent from the older commit, so a plain
+      # checkout would delete the very script that runs next. Keep a copy.
       - name: Check out the requested base commit
         if: inputs.base_sha != ''
         run: |
+          cp -r starry /tmp/starry-backup
           git checkout "${{ inputs.base_sha }}"
+          rm -rf starry
+          cp -r /tmp/starry-backup starry
           git log -1 --format='building %h %s'
 
       - name: Apply the fix by anchor
