@@ -1,9 +1,15 @@
 name: Starry build (arm64)
 
-# Manual only: a push used to start a 40-minute build that the patch check
-# always failed first. Run it from the Actions tab once the anchor is green.
+# Manual only. base_sha checks out an older commit before the fix is applied:
+# upstream main has not compiled since 2026-11-11, and d30445fe (11-10) is the
+# last commit whose full CI was green. Leave it empty to build main's tip.
 on:
   workflow_dispatch:
+    inputs:
+      base_sha:
+        description: 'Commit to build (empty = main tip)'
+        required: false
+        default: ''
 
 concurrency:
   group: starry-build
@@ -21,6 +27,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check out the requested base commit
+        if: inputs.base_sha != ''
+        run: |
+          git checkout "${{ inputs.base_sha }}"
+          git log -1 --format='building %h %s'
 
       - name: Apply the fix by anchor
         run: python3 starry/patch/apply.py
