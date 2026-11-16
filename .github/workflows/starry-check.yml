@@ -16,6 +16,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Dump the region the patch targets
+        run: |
+          f=feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/WMKeyboardService.kt
+          echo "::group::existing declarations"
+          grep -n "fun hideWindow\|fun showWindow\|imeWindowPlatformSized\|windowBlurring" "$f" | head -40 || true
+          echo "::endgroup::"
+          n=$(grep -n "private fun fitImeWindowHeight" "$f" | head -1 | cut -d: -f1)
+          echo "fitImeWindowHeight at line $n"
+          if [ -n "$n" ]; then
+            echo "::group::lines $((n-16)) to $((n+16))"
+            sed -n "$((n-16)),$((n+16))p" "$f" | cat -A | sed 's/\$$//'
+            echo "::endgroup::"
+          fi
+
       - name: Apply every patch, dry run
         run: |
           set -euo pipefail
