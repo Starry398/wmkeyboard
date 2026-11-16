@@ -16,18 +16,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Show where the anchor sits
+      - name: Show where the anchors sit
         run: |
           f=feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/WMKeyboardService.kt
-          echo "lines: $(wc -l < "$f")"
+          echo "service lines: $(wc -l < "$f")"
           grep -n "private fun fitImeWindowHeight\|fun hideWindow\|fun showWindow\|fullHeightWindow" "$f" | head -20 || true
+          echo "gradle lines:  $(wc -l < app/build.gradle.kts)"
+          grep -n "defaultConfig\|resourceConfigurations\|localeFilters" app/build.gradle.kts | head -20 || true
 
-      - name: Verify the anchor
+      - name: Verify both anchors
         run: python3 starry/patch/apply.py --check
 
-      - name: Show the resulting diff (applied on a scratch copy)
+      - name: Apply and show the diff
         run: |
-          f=feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/WMKeyboardService.kt
-          cp "$f" /tmp/before.kt
           python3 starry/patch/apply.py
-          diff -u /tmp/before.kt "$f" || true
+          git --no-pager diff --stat
+          git --no-pager diff | head -160
