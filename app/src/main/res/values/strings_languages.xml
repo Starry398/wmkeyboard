@@ -370,6 +370,22 @@ On test words the space bar wrote the right word more often in every language th
     <string name="languages_bengali_vowel_twice_subtitle">On Probhat, Jatiya and BSTI, after a vowel: one tap gives য়া or য়ে, a second tap gives আ or এ</string>
     <string name="languages_bengali_vowel_twice_info">After a vowel, the আ-কার and এ-কার keys write য়া and য়ে, as in কায়া and দিয়ে, because a bare া or ে cannot follow a vowel. With this on, pressing the key again straight away turns য়া into আ and য়ে into এ. Holding either key offers আ or এ whether this is on or not. Off by default, because a quick double press then types the glide twice.</string>
     <string name="languages_ansi_group">ANSI output</string>
+    <string name="languages_legacy_font_group">Legacy font output</string>
+    <string name="languages_legacy_font_title">Write for a legacy font</string>
+    <string name="languages_legacy_font_subtitle">A button on the strip writes text for a pre-Unicode font, so हिन्दी comes out as fgUnh in Kruti Dev</string>
+    <string name="languages_legacy_font_info">Before Unicode, South Asian scripts were typed in fonts that store each glyph as a Latin character: Kruti Dev, DevLys and Walkman Chanakya for Hindi, Sanskrit 99 for Sanskrit, Preeti for Nepali, Bamini and TSCII for Tamil, Nudi and Baraha for Kannada, AnmolLipi for Punjabi, ML-TT and FML for Malayalam, FM Abhaya for Sinhala, and the DTP and newspaper fonts of Shree Lipi, DV-TT and the dailies for Marathi, Gujarati, Telugu, Tamil, Malayalam and Punjabi, and Akruti for Odia. Print shops, design software and some government forms still use them.\n\nPick a font and the layouts of this language get a button beside the suggestions. With it lit, everything the keyboard writes is converted for that font, while the keyboard itself goes on typing, predicting and correcting in Unicode. The text only reads right in the font it was written for; anywhere else it looks like Latin letters. Off by default.</string>
+    <string name="languages_legacy_font_off">Off</string>
+    <string name="languages_legacy_font_krutidev" translatable="false">Kruti Dev 010 / DevLys 010</string>
+    <string name="languages_legacy_font_bamini" translatable="false">Bamini</string>
+    <string name="languages_legacy_font_anmollipi" translatable="false">AnmolLipi / Gurbani Akhar</string>
+    <string name="languages_legacy_font_preeti" translatable="false">Preeti</string>
+    <string name="languages_legacy_font_chanakya" translatable="false">Walkman Chanakya 905</string>
+    <string name="languages_legacy_font_sanskrit99" translatable="false">Sanskrit 99 (Itranslator 99)</string>
+    <string name="languages_legacy_font_tscii" translatable="false">TSCII 1.7</string>
+    <string name="languages_legacy_font_nudi" translatable="false">Nudi / Baraha (ANSI)</string>
+    <string name="languages_legacy_font_mltt" translatable="false">ML-TT (Revathi, Karthika, ML-KV)</string>
+    <string name="languages_legacy_font_fml" translatable="false">FML</string>
+    <string name="languages_legacy_font_fmabhaya" translatable="false">FM Abhaya (FM fonts)</string>
     <string name="languages_ansi_allowed_title">Allow ANSI output</string>
     <string name="languages_ansi_allowed_subtitle">An ANSI button on the Bengali layouts writes Bijoy-style text, so আ comes out as Av</string>
     <string name="languages_ansi_allowed_info">ANSI is how Bengali was written before Unicode, in Bijoy and in fonts like SutonnyMJ: each Bengali letter is stored as a Latin character, and the font draws it as Bengali. Some design software and older documents still need it.\n\nWith this on, every Bengali layout gets an ANSI button beside the suggestions. Tap it and what you type goes into the text box as ANSI, so আমার সোনার বাংলা becomes Avgvi †mvbvi evsjv. Tap it again for Unicode.\n\nThe word you are typing shows as Unicode until you finish it. ANSI text only reads as Bengali in an ANSI font, so keep the button off everywhere else.</string>
@@ -453,6 +469,7 @@ With this on, the keyboard draws Burmese in its own copy of Noto Sans Myanmar, a
     <string name="languages_context_model_download_size">Sentence-aware predictions, <xliff:g id="size" example="4.9 MB">%1$s</xliff:g> to download</string>
     <string name="languages_context_model_downloaded">Sentence-aware predictions, <xliff:g id="size" example="4.9 MB">%1$s</xliff:g></string>
     <string name="languages_context_model_offline">Not on this phone. This is the offline build: Get the files on the Language pack row lists it, and Import there takes it. Or install the standard build over this one from the same release page, which downloads it by itself.</string>
+    <string name="languages_context_model_imported">Sentence-aware predictions, your own model, <xliff:g id="size" example="4.9 MB">%1$s</xliff:g></string>
     <string name="languages_context_model_failed">The download failed. Try again.</string>
     <string name="languages_context_model_delete_desc">Delete the context model</string>
     <string name="languages_context_model_variant_standard">Standard</string>
@@ -594,11 +611,13 @@ With this on, the keyboard draws Burmese in its own copy of Noto Sans Myanmar, a
     <!-- %1$s and %2$s are sizes such as 1.2 MB and 2.9 MB. -->
     <string name="languages_rime_library_installing">Downloading the RIME library: <xliff:g id="done" example="1.2 MB">%1$s</xliff:g> of <xliff:g id="total" example="2.9 MB">%2$s</xliff:g></string>
     <string name="languages_rime_library_installing_unsized">Downloading the RIME library…</string>
-    <string name="languages_rime_library_failed">The RIME library did not download.</string>
+    <string name="languages_rime_library_failed">The RIME library did not download. If GitHub can\'t be reached from here, set a GitHub mirror under Privacy › Downloads.</string>
     <string name="languages_rime_status_title">RIME status</string>
     <string name="languages_rime_status_off">Download a schema pack below. RIME starts when one is compiled.</string>
     <string name="languages_rime_status_locked">RIME starts after you unlock the phone. Until then the built-in engine types.</string>
-    <string name="languages_rime_status_needs_library">Waiting for the RIME library.</string>
+    <string name="languages_rime_status_needs_library">Compile waits for the RIME library. Download it from the banner above.</string>
+    <string name="languages_rime_status_library_coming">Compiles as soon as the RIME library has downloaded.</string>
+    <string name="languages_rime_status_library_failed">Can\'t compile: the RIME library did not download. If GitHub can\'t be reached from here, set a GitHub mirror under Privacy › Downloads, then retry above.</string>
     <string name="languages_rime_status_needs_deploy">The schemas changed and need to be compiled again.</string>
     <string name="languages_rime_status_deploying_start">Getting ready to compile…</string>
     <!-- %1$s is a schema name such as 朙月拼音. %2$d and %3$d count schemas. -->
@@ -663,6 +682,11 @@ With this on, the keyboard draws Burmese in its own copy of Noto Sans Myanmar, a
     <string name="languages_cjk_traditional_info">The keyboard converts each candidate from Simplified (简体) to Traditional (繁體) before it shows the candidate. Some Simplified characters have more than one Traditional form, and the word decides which one is correct: 发 is 發 in 發展 but 髮 in 頭髮, and 后 is 後 in 後來 but 后 in 皇后. With the phrase table pack downloaded, the keyboard reads whole words, so it writes the correct form. Without the pack, or for a word that is in no table, it converts one character at a time.</string>
     <string name="languages_cjk_traditional_button_title">繁 button</string>
     <string name="languages_cjk_traditional_button_subtitle">A button beside the candidates switches between Simplified and Traditional</string>
+    <string name="languages_cjk_kyujitai_title">Old character forms</string>
+    <string name="languages_cjk_kyujitai_subtitle">Candidates come out in kyujitai (舊字體): 國 for 国, 學 for 学</string>
+    <string name="languages_cjk_kyujitai_info">The keyboard converts each candidate from the new forms used today (shinjitai) to the old forms (kyujitai), with OpenCC\'s Japanese tables. Some new forms stand for more than one old one, and the word decides: 弁 is 辯 in 弁論 but 辨 in 弁当. Kana are not changed. Mozc and the built-in conversion both follow this setting.</string>
+    <string name="languages_cjk_kyujitai_button_title">舊 button</string>
+    <string name="languages_cjk_kyujitai_button_subtitle">A button beside the candidates switches between the new and the old forms</string>
     <string name="languages_cjk_reading_in_field_title">Show the reading in the text field</string>
     <string name="languages_cjk_reading_in_field_subtitle">Off, the pinyin you type shows only on the keyboard, before the candidates</string>
     <string name="languages_cjk_reading_in_field_info">On, the pinyin, zhuyin or Jyutping that you type shows underlined in the text field until you pick a candidate. Off, the text field stays as it is, and the keyboard shows what you typed at the start of the candidate strip. Only the candidate you pick goes into the text field, the way fcitx5 works.</string>
@@ -700,6 +724,10 @@ With this on, the keyboard draws Burmese in its own copy of Noto Sans Myanmar, a
     <string name="languages_hunspell_tr_library_title">Spelling library</string>
     <string name="languages_hunspell_tr_library_ready">On this phone. Turkish is checked by the rules above once they are downloaded.</string>
     <string name="languages_hunspell_tr_library_missing">The rules above need this.</string>
+    <string name="languages_ar_download_info">Download CATT to add tashkeel to Arabic text: select it and tap Add tashkeel. Download the spelling dictionary to have Arabic checked by its rules, which know a word with its prefixes and suffixes. Both work offline after the download.</string>
+    <string name="languages_hunspell_ar_download_info">Download a spelling dictionary for Arabic. It knows a word with its prefixes and suffixes, which no word list can hold. It works offline after the download.</string>
+    <string name="languages_hunspell_ar_library_ready">On this phone. Arabic is checked by the dictionary above once it is downloaded.</string>
+    <string name="languages_hunspell_ar_library_missing">The spelling dictionary above needs this.</string>
     <string name="languages_ru_yo_download_info">Download the list of words with ё, then select Russian text and tap Restore ё. It works offline after the download.</string>
     <string name="languages_nikud_library_title">ONNX Runtime</string>
     <string name="languages_nikud_library_ready">On this phone. Select Hebrew text and tap Add niqqud.</string>
@@ -716,10 +744,16 @@ With this on, the keyboard draws Burmese in its own copy of Noto Sans Myanmar, a
          Jyutping spelling and stays as it is. -->
     <string name="languages_cjk_lazy_subtitle">Match merged sounds: n↔l, ng↔∅, gw→g before -o, -ng↔-n, -k↔-t…</string>
     <string name="languages_cjk_loose_marks_title">Match kana without marks</string>
+    <string name="languages_cjk_flick_only_title">Flick only</string>
+    <string name="languages_cjk_flick_only_subtitle">On the flick pad, tapping a key again types it again instead of stepping to the next kana</string>
+    <string name="languages_cjk_flick_only_info">The flick pad takes both flicks and repeated taps, the way most Japanese phones do: tap あ twice for い, three times for う. With this on, the keys only flick, and two taps of あ type あ twice.</string>
     <!-- Only "also finds" needs translation. The rest is Japanese text and
          stays as it is. -->
     <string name="languages_cjk_loose_marks_subtitle">かつこう also finds 学校 (がっこう)</string>
     <!-- The kana are examples and stay as they are. -->
+    <string name="languages_cjk_kana_backspace_title">Backspace takes a whole kana</string>
+    <string name="languages_cjk_kana_backspace_subtitle">While typing romaji, Backspace removes the last kana instead of the last letter</string>
+    <string name="languages_cjk_kana_backspace_info">Off, Backspace on a reading that is not converted yet takes back the last letter you typed, so こんにちは becomes こんにちh, as in Google Japanese Input. On, it takes the whole last kana with every letter that spelled it, so こんにちは becomes こんにち. A letter still waiting for its vowel goes on its own. Once the reading is converted, Backspace works the same either way.</string>
     <string name="languages_cjk_loose_marks_info">On the Flick and Kana JIS layouts, a small kana, a ゛ or a ゜ is an extra key. With this on, a plain kana also matches those forms: か finds が, つ finds っ and づ, は finds ば and ぱ, や finds ゃ. When two words are almost equally common, the one that you typed exactly comes first. A kana that you typed with a mark is not changed, and Romaji typing is not changed.</string>
     <string name="languages_cjk_full_width_space_title">Full-width space</string>
     <!-- 　 is the full-width space itself, drawn between the brackets, and stays

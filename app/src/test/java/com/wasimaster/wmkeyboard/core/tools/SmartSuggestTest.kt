@@ -568,6 +568,18 @@ class SmartSuggestTest {
     }
 
     @Test
+    fun numbersInsideALinkAreNotSums() {
+        assertNull(hit("https://www.nature.com/articles/d41586-026-03638-3"))
+        // The window has cut the scheme off; the domain and path still say link.
+        assertNull(hit("see nature.com/articles/d41586-026-03638-3"))
+        assertNull(hit("example.org?page=2+3"))
+        assertNull(hit("wiki/item-12-4"))
+        // A sum typed after a link, as its own word, still gets its chip.
+        assertEquals("8", hit("https://example.com 12-4")?.result)
+        assertEquals("3", hit("12/4")?.result)
+    }
+
+    @Test
     fun aShortSubtractionIsASumWithoutTheEquals() {
         // #545
         assertEquals("8", hit("12-4")?.result)
@@ -704,6 +716,34 @@ class SmartSuggestTest {
         val defaults = SmartSuggest.defaultKeywords.getValue(ToolbarTool.WIKIPEDIA)
         val encoded = SmartSuggest.withKeywords("", ToolbarTool.WIKIPEDIA, defaults)
         assertEquals("", encoded)
+    }
+
+    @Test
+    fun defaultKeywordsFollowTheScriptsTheUserTypes() {
+        val none = SmartSuggest.KeywordScripts()
+        assertEquals(listOf("translate"), SmartSuggest.defaultKeywordsFor(ToolbarTool.TRANSLATE, none))
+        assertEquals(
+            listOf("translate", "번역"),
+            SmartSuggest.defaultKeywordsFor(ToolbarTool.TRANSLATE, SmartSuggest.KeywordScripts(hangul = true)),
+        )
+        val japanese = SmartSuggest.KeywordScripts(han = true, kana = true)
+        assertTrue("QRコード" in SmartSuggest.defaultKeywordsFor(ToolbarTool.QR_GEN, japanese))
+        assertTrue("큐알코드" !in SmartSuggest.defaultKeywordsFor(ToolbarTool.QR_GEN, japanese))
+    }
+
+    @Test
+    fun aKeywordInAScriptNobodyTypesOffersNothing() {
+        val latin = ctx.copy(keywordScripts = SmartSuggest.KeywordScripts())
+        assertNull(hit("笔记", latin))
+        assertNull(hit("我的笔记", latin))
+        assertEquals(ToolbarTool.NOTES, hit("notes", latin)?.tool)
+    }
+
+    @Test
+    fun writingBackTheShownDefaultsDropsTheOverride() {
+        val none = SmartSuggest.KeywordScripts()
+        val shown = SmartSuggest.defaultKeywordsFor(ToolbarTool.WIKIPEDIA, none)
+        assertEquals("", SmartSuggest.withKeywords("", ToolbarTool.WIKIPEDIA, shown, none))
     }
 
     // ---- keyword case sensitivity ----

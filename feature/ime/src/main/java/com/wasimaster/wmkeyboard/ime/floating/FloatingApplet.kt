@@ -1,5 +1,9 @@
 package com.wasimaster.wmkeyboard.ime.floating
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -9,8 +13,11 @@ import android.util.DisplayMetrics
 import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.ViewConfiguration
+import android.view.WindowInsets
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import androidx.compose.runtime.collectAsState
@@ -19,11 +26,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.core.content.edit
+import com.wasimaster.wmkeyboard.core.settings.ToolbarTool
+import com.wasimaster.wmkeyboard.core.settings.boxClosesOutside
 import com.wasimaster.wmkeyboard.ime.KeyboardUiState
 import com.wasimaster.wmkeyboard.ime.KeyboardViewLifecycleOwner
 import com.wasimaster.wmkeyboard.ime.PanelMode
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 /**
@@ -48,6 +58,19 @@ import kotlin.math.roundToInt
  * tool's icon is left on the edge, and a tap on it brings the box back. With
  * [com.wasimaster.wmkeyboard.core.settings.SummonButtonSettings.boxClosesOutside]
  * a tap anywhere else on the screen closes it.
+ *
+ * It moves by its title bar, its bottom bar, any part of the tool that a
+ * drag does nothing to, or two fingers anywhere, which also pinch it bigger
+ * or smaller (#1263, #1262). Let go moving, it carries on a little way and
+ * settles; with
+ * [com.wasimaster.wmkeyboard.core.settings.SummonButtonSettings.boxGestures]
+ * a throw up closes it, a throw down moves the tool into the keyboard, and a
+ * throw sideways tucks it (#1262). Its top never goes under the status bar,
+ * where Android's shade would take every touch meant for it (#1263).
+ *
+ * A double tap on its title bar rolls it up to the bar and back (#1241), and
+ * its see-through button fades it and lets every touch through to the app
+ * under it, a small button left on its corner to make it solid again.
  */
 internal class FloatingApplet(
     private val context: Context,
@@ -74,7 +97,7 @@ internal class FloatingApplet(
 
     private val box = FloatingAppletState()
     private val lifecycle = KeyboardViewLifecycleOwner().apply { onCreate() }
-    private var view: ComposeView? = null
+    private var view: BoxHost? = null
     private var params: WindowManager.LayoutParams? = null
 
     /** The docked keyboard's top edge on screen, which the box stays above; null while it is down. */
@@ -111,9 +134,10 @@ internal class FloatingApplet(
      * or swapping what an open one shows. False without the overlay grant, or
      * when Android refuses the window.
      */
-    fun open(panel: PanelMode, title: String, icon: ImageVector): Boolean {
+    fun open(panel: PanelMode, title: String, icon: ImageVector, tool: ToolbarTool? = null): Boolean {
         box.title = title
         box.icon = icon
+        box.tool = tool
         val current = view
         if (current != null) {
             box.panel = panel
@@ -123,6 +147,7 @@ internal class FloatingApplet(
         box.tuckedLeft = null
         if (!Settings.canDrawOverlays(context)) return false
         box.panel = panel
+        val frame = BoxHost(windowContext)
         val compose = ComposeView(windowContext).apply {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
             setContent {
@@ -132,41 +157,43 @@ internal class FloatingApplet(
                     state = state,
                     callbacks = host.appletCallbacks(),
                     onMove = ::onMove,
+                    onBodyDrag = ::onBodyDrag,
                     onResize = ::onResize,
                     onTuck = { tuck(nearLeft()) },
+                    onRollUp = ::toggleRolledUp,
+                    onSeeThrough = { seeThrough(true) },
                     onTabTouch = ::onTabTouch,
                     onRestore = ::untuck,
                     onClose = { close() },
-                    onOpenInKeyboard = {
-                        box.panel?.let { shown ->
-                            close(notify = false)
-                            host.appletToKeyboard(shown)
-                        }
-                    },
+                    onOpenInKeyboard = ::toKeyboard,
                 )
             }
         }
-        // A touch anywhere else on the screen, for the setting that closes the box on one.
-        compose.setOnTouchListener { _, event ->
-            if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) onOutsideTouch(event)
-            false
-        }
-        lifecycle.attachTo(compose)
+        frame.addView(compose, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        lifecycle.attachTo(frame)
         lifecycle.onResume()
         val layout = layoutParams()
-        if (runCatching { windowManager.addView(compose, layout) }.isFailure) {
+        if (runCatching { windowManager.addView(frame, layout) }.isFailure) {
             lifecycle.onStop()
             box.panel = null
             return false
         }
-        view = compose
+        view = frame
         params = layout
-        compose.alpha = 0f
-        compose.scaleX = 0.92f
-        compose.scaleY = 0.92f
-        compose.animate().alpha(1f).scaleX(1f).scaleY(1f)
+        frame.alpha = 0f
+        frame.scaleX = 0.92f
+        frame.scaleY = 0.92f
+        frame.animate().alpha(1f).scaleX(1f).scaleY(1f)
             .setInterpolator(OvershootInterpolator(1.2f)).setDuration(APPEAR_MS).start()
         return true
+    }
+
+    /** The box's "open in the keyboard" button, or a throw down (#1262): the tool moves into the keyboard. */
+    private fun toKeyboard() {
+        box.panel?.let { shown ->
+            close(notify = false)
+            host.appletToKeyboard(shown)
+        }
     }
 
     /** Closes the box. Safe to call with none open. */
@@ -175,13 +202,19 @@ internal class FloatingApplet(
     private fun close(notify: Boolean) {
         val current = view ?: return
         val shown = box.panel
+        removeSolidButton()
         view = null
         params = null
+        glide?.cancel()
+        glide = null
+        pinching = false
         current.animate().cancel()
         runCatching { windowManager.removeViewImmediate(current) }
         lifecycle.onStop()
         box.panel = null
         box.tuckedLeft = null
+        box.rolledUp = false
+        box.seeThrough = false
         if (notify && shown != null) host.appletClosed(shown)
     }
 
@@ -197,6 +230,9 @@ internal class FloatingApplet(
             untuck()
             return
         }
+        // So does a see-through one, or a rolled-up one.
+        if (box.seeThrough) seeThrough(false)
+        if (box.rolledUp) toggleRolledUp()
         current.animate().cancel()
         current.scaleX = 1.04f
         current.scaleY = 1.04f
@@ -250,16 +286,40 @@ internal class FloatingApplet(
         val height = prefs.getInt(KEY_H, -1).takeIf { it > 0 }?.let(::dp)
             ?: dp(DEFAULT_HEIGHT_DP) + shadow
         return width.coerceIn(minOf(dp(MIN_WIDTH_DP), screenW), screenW) to
-            height.coerceIn(minOf(dp(MIN_HEIGHT_DP), screenH), screenH)
+            if (box.rolledUp) rolledHeight() else height.coerceIn(minOf(dp(MIN_HEIGHT_DP), screenH), screenH)
     }
+
+    /** A rolled-up box (#1241): its title bar and the shadow round it. */
+    private fun rolledHeight(): Int = dp(FLOATING_APPLET_BAR_DP) + 2 * dp(FLOATING_APPLET_SHADOW_DP)
 
     private fun positionFromPrefs(layout: WindowManager.LayoutParams) {
         val (roomX, roomY) = room(layout)
         layout.x = (prefs.getFloat(KEY_X, 0.5f).coerceIn(0f, 1f) * roomX).roundToInt()
-        val rest = (prefs.getFloat(KEY_Y, DEFAULT_Y).coerceIn(0f, 1f) * roomY).roundToInt()
+        val floor = topFloor()
+        val rest = (prefs.getFloat(KEY_Y, DEFAULT_Y).coerceIn(0f, 1f) * roomY).roundToInt().coerceAtLeast(floor)
         // Lifted clear of a docked keyboard, as the floating button is, without moving where it was left.
         val ceiling = ceilingPx?.let { it - layout.height }
-        layout.y = if (ceiling != null && rest > ceiling) ceiling.coerceAtLeast(0) else rest
+        layout.y = if (ceiling != null && rest > ceiling) ceiling.coerceAtLeast(floor) else rest
+    }
+
+    /**
+     * The highest the window's top may go (#1263): the card's top edge just
+     * under the status bar and any cutout, its shadow room allowed over them.
+     * A title bar under the status bar was a box nobody could move again,
+     * since Android's shade takes every touch there.
+     */
+    @SuppressLint("DiscouragedApi", "InternalInsetResource")
+    private fun topFloor(): Int {
+        val inset = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                windowManager.currentWindowMetrics.windowInsets
+                    .getInsetsIgnoringVisibility(WindowInsets.Type.statusBars() or WindowInsets.Type.displayCutout()).top
+            }.getOrDefault(0)
+        } else {
+            val id = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+            if (id != 0) context.resources.getDimensionPixelSize(id) else dp(STATUS_BAR_FALLBACK_DP)
+        }
+        return (inset - dp(FLOATING_APPLET_SHADOW_DP)).coerceAtLeast(0)
     }
 
     private fun place() {
@@ -268,6 +328,7 @@ internal class FloatingApplet(
         val onLeft = box.tuckedLeft
         if (onLeft != null) placeTab(layout, onLeft) else positionFromPrefs(layout)
         runCatching { windowManager.updateViewLayout(current, layout) }
+        placeSolidButton()
     }
 
     /** Keeps where the box was let go, as fractions of the room the screen leaves it. */
@@ -278,6 +339,118 @@ internal class FloatingApplet(
             putFloat(KEY_Y, if (roomY == 0) 0f else layout.y.coerceIn(0, roomY).toFloat() / roomY)
         }
     }
+
+    /** Keeps the box's size, in dp, for the next time it opens; a rolled-up box's height is not its own. */
+    private fun saveSize(layout: WindowManager.LayoutParams) {
+        prefs.edit {
+            putInt(KEY_W, (layout.width / density).roundToInt())
+            if (!box.rolledUp) putInt(KEY_H, (layout.height / density).roundToInt())
+        }
+    }
+
+    // ---- rolled up and see-through (#1241) ----
+
+    /**
+     * Rolls the box up to its title bar, or back down to its size: the app
+     * under it in view without closing the tool. Its top stays where it is.
+     */
+    private fun toggleRolledUp() {
+        val layout = params ?: return
+        val current = view ?: return
+        if (box.tuckedLeft != null) return
+        box.rolledUp = !box.rolledUp
+        layout.height = size().second
+        val (_, roomY) = room(layout)
+        layout.y = layout.y.coerceIn(topFloor().coerceAtMost(roomY), roomY)
+        runCatching { windowManager.updateViewLayout(current, layout) }
+    }
+
+    /** The button left on a see-through box's corner that makes it solid again. */
+    private var solidButton: ComposeView? = null
+
+    /**
+     * See-through ([on]) or solid (#1241). See-through, the box is faded
+     * and takes no touch at all, so a tap anywhere on it lands on the app
+     * under it; the keys still type into its tool. Android lets touches pass
+     * an overlay only when it is faded past [SEE_THROUGH_ALPHA]'s ceiling,
+     * which is why the fade and the pass-through are one switch. A small
+     * button of its own, outside the faded window, brings it back.
+     */
+    private fun seeThrough(on: Boolean) {
+        val layout = params ?: return
+        val current = view ?: return
+        if (box.seeThrough == on) return
+        box.seeThrough = on
+        if (on) {
+            layout.flags = layout.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            layout.alpha = SEE_THROUGH_ALPHA
+        } else {
+            layout.flags = layout.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            layout.alpha = 1f
+        }
+        runCatching { windowManager.updateViewLayout(current, layout) }
+        if (on) addSolidButton() else removeSolidButton()
+    }
+
+    private fun addSolidButton() {
+        if (solidButton != null) return
+        val button = ComposeView(windowContext).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
+            setContent {
+                val state by host.state.collectAsState()
+                SolidAgainButton(state, box) { seeThrough(false) }
+            }
+        }
+        lifecycle.attachTo(button)
+        val size = dp(SOLID_BUTTON_DP)
+        val flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+        val layout = WindowManager.LayoutParams(size, size, type, flags, PixelFormat.TRANSLUCENT).apply {
+            gravity = Gravity.TOP or Gravity.START
+            title = "WM Keyboard floating tool, solid again"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) setFitInsetsTypes(0)
+        }
+        if (runCatching { windowManager.addView(button, layout) }.isFailure) {
+            // No way back from see-through without it: stay solid.
+            params?.let { card ->
+                card.flags = card.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                card.alpha = 1f
+                view?.let { runCatching { windowManager.updateViewLayout(it, card) } }
+            }
+            box.seeThrough = false
+            return
+        }
+        solidButton = button
+        placeSolidButton()
+    }
+
+    /** On the card's top end corner, over its close button, where a hand reaching to close it finds it. */
+    private fun placeSolidButton() {
+        val button = solidButton ?: return
+        val card = params ?: return
+        val layout = button.layoutParams as? WindowManager.LayoutParams ?: return
+        val shadow = dp(FLOATING_APPLET_SHADOW_DP)
+        layout.x = card.x + card.width - shadow - layout.width
+        layout.y = card.y + shadow + (dp(FLOATING_APPLET_BAR_DP) - layout.height) / 2
+        runCatching { windowManager.updateViewLayout(button, layout) }
+    }
+
+    private fun removeSolidButton() {
+        val button = solidButton ?: return
+        solidButton = null
+        runCatching { windowManager.removeViewImmediate(button) }
+    }
+
+    /** When the title bar was last tapped, for the double tap that rolls the box up. */
+    private var lastBarTap = 0L
 
     /** Whether the box's middle is on the left half of the screen, the side a tuck goes to. */
     private fun nearLeft(): Boolean {
@@ -298,9 +471,11 @@ internal class FloatingApplet(
         val layout = params ?: return
         val current = view ?: return
         if (box.tuckedLeft != null) return
+        glide?.cancel()
+        glide = null
         // It comes back against the side it went into, at the height it was.
         layout.x = if (onLeft) 0 else room(layout).first
-        layout.y = layout.y.coerceIn(0, room(layout).second)
+        layout.y = layout.y.coerceIn(topFloor().coerceAtMost(room(layout).second), room(layout).second)
         saveRest(layout)
         tabTopPx = layout.y + layout.height / 2 - dp(TAB_HEIGHT_DP) / 2
         box.tuckedLeft = onLeft
@@ -343,7 +518,8 @@ internal class FloatingApplet(
         val (screenW, screenH) = screenSize()
         layout.x = if (onLeft) 0 else screenW - layout.width
         val lowest = (ceilingPx ?: screenH) - layout.height
-        layout.y = tabTopPx.coerceIn(0, lowest.coerceAtLeast(0))
+        val floor = topFloor()
+        layout.y = tabTopPx.coerceIn(floor.coerceAtMost(lowest), lowest.coerceAtLeast(floor))
     }
 
     /**
@@ -387,7 +563,7 @@ internal class FloatingApplet(
      */
     private fun onOutsideTouch(event: MotionEvent) {
         if (box.tuckedLeft != null) return
-        if (!host.state.value.settings.summonButton.boxClosesOutside) return
+        if (!host.state.value.settings.boxClosesOutside(box.tool)) return
         val keys = ceilingPx
         if (keys != null && event.rawY >= keys) return
         close()
@@ -415,47 +591,351 @@ internal class FloatingApplet(
     private var downRawY = 0f
     private var downA = 0
     private var downB = 0
+    private var downTime = 0L
 
-    /** The title bar: the whole box follows the finger, and is remembered where it is let go. */
+    /** The finger's speed over the last drag, for the throw and the glide after it. */
+    private var tracker: VelocityTracker? = null
+
+    /** The glide a let-go box makes to rest, or a throw on its way off the screen. */
+    private var glide: ValueAnimator? = null
+
+    /** Two fingers have the box (#1263): every other drag stands down until they let go. */
+    private var pinching = false
+
+    /** The title bar or the bottom bar: the whole box follows the finger, and is remembered where it is let go. */
     private fun onMove(event: MotionEvent): Boolean {
-        val layout = params ?: return false
-        val current = view ?: return false
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                downRawX = event.rawX
-                downRawY = event.rawY
-                downA = layout.x
-                downB = layout.y
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val (roomX, roomY) = room(layout)
-                // Past a side by up to half the box, on its way into the edge.
-                val over = layout.width / 2
-                layout.x = (downA + (event.rawX - downRawX).roundToInt()).coerceIn(-over, roomX + over)
-                layout.y = (downB + (event.rawY - downRawY).roundToInt()).coerceIn(0, roomY)
-                runCatching { windowManager.updateViewLayout(current, layout) }
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                val roomX = room(layout).first
-                val past = when {
-                    layout.x < 0 -> -layout.x
-                    layout.x > roomX -> layout.x - roomX
-                    else -> 0
-                }
-                // Pushed far enough into a side, it tucks into it; a little
-                // way, it settles back against it.
-                if (event.actionMasked == MotionEvent.ACTION_UP && past > layout.width * TUCK_PAST) {
-                    tuck(onLeft = layout.x < 0)
-                } else {
-                    if (past > 0) {
-                        layout.x = layout.x.coerceIn(0, roomX)
-                        runCatching { windowManager.updateViewLayout(current, layout) }
+            MotionEvent.ACTION_DOWN -> dragStart(event.rawX, event.rawY, event.eventTime)
+            MotionEvent.ACTION_MOVE -> dragTo(event.rawX, event.rawY, event.eventTime)
+            MotionEvent.ACTION_UP -> {
+                val config = ViewConfiguration.get(context)
+                val still = hypot(event.rawX - downRawX, event.rawY - downRawY) <= config.scaledTouchSlop
+                val tap = still && event.eventTime - downTime <= ViewConfiguration.getTapTimeout() * 3L
+                dragEnd(event.rawX, event.rawY, event.eventTime, cancelled = false)
+                if (tap) {
+                    // Two taps on the bar roll the box up, or back down (#1241).
+                    if (event.eventTime - lastBarTap <= ViewConfiguration.getDoubleTapTimeout()) {
+                        lastBarTap = 0L
+                        toggleRolledUp()
+                    } else {
+                        lastBarTap = event.eventTime
                     }
-                    saveRest(layout)
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> dragEnd(event.rawX, event.rawY, event.eventTime, cancelled = true)
+        }
+        return true
+    }
+
+    /**
+     * A drag on the tool itself, where nothing in it took the drag (#1263).
+     * Compose reads it; the finger's place on screen is the one the window
+     * last saw, since points inside a window that moves under them chase
+     * themselves.
+     */
+    private fun onBodyDrag(phase: BodyDrag) {
+        val frame = view ?: return
+        when (phase) {
+            BodyDrag.START -> dragStart(frame.rawX, frame.rawY, frame.time)
+            BodyDrag.MOVE -> dragTo(frame.rawX, frame.rawY, frame.time)
+            BodyDrag.END -> dragEnd(frame.rawX, frame.rawY, frame.time, cancelled = false)
+            BodyDrag.CANCEL -> dragEnd(frame.rawX, frame.rawY, frame.time, cancelled = true)
+        }
+    }
+
+    private fun dragStart(rawX: Float, rawY: Float, time: Long) {
+        val layout = params ?: return
+        if (pinching) return
+        glide?.cancel()
+        glide = null
+        // Caught mid-throw, it is solid again.
+        view?.alpha = 1f
+        downRawX = rawX
+        downRawY = rawY
+        downA = layout.x
+        downB = layout.y
+        downTime = time
+        tracker?.recycle()
+        tracker = VelocityTracker.obtain()
+        track(rawX, rawY, time, MotionEvent.ACTION_DOWN)
+    }
+
+    private fun dragTo(rawX: Float, rawY: Float, time: Long) {
+        val layout = params ?: return
+        val current = view ?: return
+        if (pinching || tracker == null) return
+        track(rawX, rawY, time, MotionEvent.ACTION_MOVE)
+        val (roomX, roomY) = room(layout)
+        // Past a side by up to half the box, on its way into the edge.
+        val over = layout.width / 2
+        layout.x = (downA + (rawX - downRawX).roundToInt()).coerceIn(-over, roomX + over)
+        layout.y = (downB + (rawY - downRawY).roundToInt()).coerceIn(topFloor().coerceAtMost(roomY), roomY)
+        runCatching { windowManager.updateViewLayout(current, layout) }
+    }
+
+    /**
+     * The drag let go. Thrown, with gestures on (#1262), the box goes: up it
+     * closes, down it moves into the keyboard, sideways it tucks. Pushed far
+     * enough into a side it tucks into it either way. Anywhere else it
+     * carries on the way it was going and comes to rest, where it is kept.
+     */
+    private fun dragEnd(rawX: Float, rawY: Float, time: Long, cancelled: Boolean) {
+        val layout = params ?: return
+        val current = view ?: return
+        val velocity = tracker ?: return
+        tracker = null
+        if (pinching) {
+            velocity.recycle()
+            return
+        }
+        track(rawX, rawY, time, MotionEvent.ACTION_UP, velocity)
+        velocity.computeCurrentVelocity(1000, ViewConfiguration.get(context).scaledMaximumFlingVelocity.toFloat())
+        val vx = if (cancelled) 0f else velocity.xVelocity
+        val vy = if (cancelled) 0f else velocity.yVelocity
+        velocity.recycle()
+        val fling = THROW_DP_PER_S * density
+        if (host.state.value.settings.summonButton.boxGestures && !cancelled) {
+            when {
+                vy < -fling && abs(vy) > abs(vx) * THROW_AXIS -> {
+                    throwOff(up = true, vy)
+                    return
+                }
+                vy > fling && abs(vy) > abs(vx) * THROW_AXIS -> {
+                    throwOff(up = false, vy)
+                    return
+                }
+                abs(vx) > fling && abs(vx) > abs(vy) * THROW_AXIS -> {
+                    tuck(onLeft = vx < 0)
+                    return
                 }
             }
         }
-        return true
+        val roomX = room(layout).first
+        val past = when {
+            layout.x < 0 -> -layout.x
+            layout.x > roomX -> layout.x - roomX
+            else -> 0
+        }
+        // Pushed far enough into a side, it tucks into it; a little
+        // way, it settles back against it.
+        if (!cancelled && past > layout.width * TUCK_PAST) {
+            tuck(onLeft = layout.x < 0)
+            return
+        }
+        settle(current, layout, vx, vy)
+    }
+
+    /** Feeds the finger's place on screen to [into], or to the drag's tracker. */
+    private fun track(rawX: Float, rawY: Float, time: Long, action: Int, into: VelocityTracker? = tracker) {
+        val sink = into ?: return
+        val event = MotionEvent.obtain(downTime, time, action, rawX, rawY, 0)
+        sink.addMovement(event)
+        event.recycle()
+    }
+
+    /**
+     * The box carries on from the speed it was let go at, a short way and
+     * slowing, and stops inside the screen, below the status bar and above
+     * a docked keyboard: the floating button's feel (#1262). Kept where it
+     * stops.
+     */
+    private fun settle(current: BoxHost, layout: WindowManager.LayoutParams, vx: Float, vy: Float) {
+        val (roomX, roomY) = room(layout)
+        val floor = topFloor().coerceAtMost(roomY)
+        val lowest = ceilingPx?.let { (it - layout.height).coerceIn(floor, roomY) } ?: roomY
+        val fromX = layout.x
+        val fromY = layout.y
+        val toX = (fromX + vx * GLIDE_S).roundToInt().coerceIn(0, roomX)
+        val toY = (fromY + vy * GLIDE_S).roundToInt().coerceIn(floor, maxOf(floor, lowest, fromY.coerceAtMost(roomY)))
+        if (toX == fromX && toY == fromY) {
+            saveRest(layout)
+            return
+        }
+        glide = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = GLIDE_MS
+            interpolator = DecelerateInterpolator(1.6f)
+            addUpdateListener {
+                if (view !== current) return@addUpdateListener
+                val t = it.animatedValue as Float
+                layout.x = fromX + ((toX - fromX) * t).roundToInt()
+                layout.y = fromY + ((toY - fromY) * t).roundToInt()
+                runCatching { windowManager.updateViewLayout(current, layout) }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                private var stopped = false
+                override fun onAnimationCancel(animation: Animator) {
+                    stopped = true
+                }
+
+                override fun onAnimationEnd(animation: Animator) {
+                    // Kept wherever it stopped, a touch that caught it included.
+                    if (view === current) saveRest(layout)
+                    if (!stopped) glide = null
+                }
+            })
+            start()
+        }
+    }
+
+    /**
+     * Thrown off the top (closes) or the bottom (into the keyboard) of the
+     * screen (#1262): the box flies on at the speed it was thrown, fading,
+     * and goes once it is off. Where it rested before the throw is still
+     * where it opens next time.
+     */
+    private fun throwOff(up: Boolean, vy: Float) {
+        val layout = params ?: return
+        val current = view ?: return
+        val screenH = screenSize().second
+        val fromY = layout.y
+        val toY = if (up) -layout.height else screenH
+        val ms = (abs(toY - fromY) / abs(vy).coerceAtLeast(1f) * 1000f).toLong().coerceIn(THROW_MIN_MS, THROW_MAX_MS)
+        glide?.cancel()
+        glide = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = ms
+            interpolator = android.view.animation.LinearInterpolator()
+            addUpdateListener {
+                if (view !== current) return@addUpdateListener
+                val t = it.animatedValue as Float
+                layout.y = fromY + ((toY - fromY) * t).roundToInt()
+                current.alpha = 1f - t
+                runCatching { windowManager.updateViewLayout(current, layout) }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                private var stopped = false
+                override fun onAnimationCancel(animation: Animator) {
+                    stopped = true
+                }
+
+                override fun onAnimationEnd(animation: Animator) {
+                    if (stopped || view !== current) return
+                    glide = null
+                    if (up) close() else toKeyboard()
+                }
+            })
+            start()
+        }
+    }
+
+    // ---- two fingers ----
+
+    private var pinchSpan = 0f
+    private var pinchCenterX = 0f
+    private var pinchCenterY = 0f
+    private var pinchX = 0
+    private var pinchY = 0
+    private var pinchW = 0
+    private var pinchH = 0
+
+    /** A second finger came down on the box: the two move it, and pinch it bigger or smaller (#1262, #1263). */
+    private fun pinchStart(event: MotionEvent) {
+        val layout = params ?: return
+        glide?.cancel()
+        glide = null
+        tracker?.recycle()
+        tracker = null
+        pinching = true
+        pinchSpan = span(event).coerceAtLeast(1f)
+        pinchCenterX = (rawX(event, 0) + rawX(event, 1)) / 2f
+        pinchCenterY = (rawY(event, 0) + rawY(event, 1)) / 2f
+        pinchX = layout.x
+        pinchY = layout.y
+        pinchW = layout.width
+        pinchH = layout.height
+    }
+
+    private fun pinchMove(event: MotionEvent) {
+        val layout = params ?: return
+        val current = view ?: return
+        if (!pinching || event.pointerCount < 2) return
+        val (screenW, screenH) = screenSize()
+        val scale = span(event) / pinchSpan
+        val width = (pinchW * scale).roundToInt().coerceIn(minOf(dp(MIN_WIDTH_DP), screenW), screenW)
+        val height = if (box.rolledUp) pinchH else (pinchH * scale).roundToInt().coerceIn(minOf(dp(MIN_HEIGHT_DP), screenH), screenH)
+        val cx = (rawX(event, 0) + rawX(event, 1)) / 2f
+        val cy = (rawY(event, 0) + rawY(event, 1)) / 2f
+        layout.width = width
+        layout.height = height
+        // Grown about its middle, and carried with the fingers.
+        val (roomX, roomY) = room(layout)
+        layout.x = (pinchX + (cx - pinchCenterX) - (width - pinchW) / 2f).roundToInt().coerceIn(0, roomX)
+        layout.y = (pinchY + (cy - pinchCenterY) - (height - pinchH) / 2f).roundToInt()
+            .coerceIn(topFloor().coerceAtMost(roomY), roomY)
+        runCatching { windowManager.updateViewLayout(current, layout) }
+    }
+
+    private fun pinchEnd() {
+        val layout = params ?: return
+        if (!pinching) return
+        pinching = false
+        saveSize(layout)
+        saveRest(layout)
+    }
+
+    private fun span(event: MotionEvent): Float =
+        hypot(rawX(event, 1) - rawX(event, 0), rawY(event, 1) - rawY(event, 0))
+
+    /** Pointer [index]'s place on screen; the window's own offset, shared by every pointer, added back before API 29. */
+    private fun rawX(event: MotionEvent, index: Int): Float =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) event.getRawX(index) else event.getX(index) + event.rawX - event.getX(0)
+
+    private fun rawY(event: MotionEvent, index: Int): Float =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) event.getRawY(index) else event.getY(index) + event.rawY - event.getY(0)
+
+    /**
+     * The box's window: the composition, the place on screen of every touch
+     * on it for [onBodyDrag], two fingers for [pinchStart], and the touches
+     * outside it for [onOutsideTouch].
+     */
+    @SuppressLint("ViewConstructor")
+    private inner class BoxHost(context: Context) : FrameLayout(context) {
+        var rawX = 0f
+            private set
+        var rawY = 0f
+            private set
+        var time = 0L
+            private set
+
+        override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+            // A touch anywhere else on the screen, for the setting that closes the box on one.
+            if (ev.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                onOutsideTouch(ev)
+                return false
+            }
+            rawX = ev.rawX
+            rawY = ev.rawY
+            time = ev.eventTime
+            return super.dispatchTouchEvent(ev)
+        }
+
+        override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+            if (ev.actionMasked != MotionEvent.ACTION_POINTER_DOWN || ev.pointerCount != 2) return false
+            if (box.tuckedLeft != null) return false
+            pinchStart(ev)
+            return true
+        }
+
+        /**
+         * Two fingers that came down on a part of the box nothing in the
+         * composition answers still pinch it: the first one's touch is kept
+         * here so the second one's arrives.
+         */
+        @SuppressLint("ClickableViewAccessibility")
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) return box.tuckedLeft == null
+            if (event.actionMasked == MotionEvent.ACTION_POINTER_DOWN && event.pointerCount == 2 && !pinching) {
+                if (box.tuckedLeft == null) pinchStart(event)
+                return true
+            }
+            if (!pinching) return true
+            when (event.actionMasked) {
+                MotionEvent.ACTION_MOVE -> pinchMove(event)
+                // One finger left: the pinch is over, and the other finger's
+                // drag does nothing until it lifts too.
+                MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> pinchEnd()
+            }
+            return true
+        }
     }
 
     /** The corner grip: the box grows or shrinks with the finger, its top left corner staying put. */
@@ -477,12 +957,7 @@ internal class FloatingApplet(
                     .coerceIn(minOf(dp(MIN_HEIGHT_DP), screenH), (screenH - layout.y).coerceAtLeast(dp(MIN_HEIGHT_DP)))
                 runCatching { windowManager.updateViewLayout(current, layout) }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                prefs.edit {
-                    putInt(KEY_W, (layout.width / density).roundToInt())
-                    putInt(KEY_H, (layout.height / density).roundToInt())
-                }
-            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> saveSize(layout)
         }
         return true
     }
@@ -510,5 +985,30 @@ internal class FloatingApplet(
 
         /** How much of the box has to be pushed past a side for it to tuck, as a share of its width. */
         const val TUCK_PAST = 0.3f
+
+        /** How fast a let-go box has to be moving to count as thrown (#1262), in dp a second. */
+        const val THROW_DP_PER_S = 1800f
+
+        /** A throw's direction has to beat the other axis by this much, so a diagonal flick does neither. */
+        const val THROW_AXIS = 1.4f
+        const val THROW_MIN_MS = 120L
+        const val THROW_MAX_MS = 280L
+
+        /** How far a let-go box carries on, as seconds of the speed it had, and how long it takes. */
+        const val GLIDE_S = 0.12f
+        const val GLIDE_MS = 320L
+
+        /** The status bar's height where Android will not say (#1263). */
+        const val STATUS_BAR_FALLBACK_DP = 24
+
+        /**
+         * A see-through box's fade (#1241). Android passes touches through an
+         * overlay only at or under 0.8 opacity, its ceiling for windows of
+         * other apps; half lets the app under it read clearly.
+         */
+        const val SEE_THROUGH_ALPHA = 0.5f
+
+        /** The make-it-solid button on a see-through box's corner. */
+        const val SOLID_BUTTON_DP = 40
     }
 }

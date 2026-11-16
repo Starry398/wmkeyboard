@@ -123,6 +123,37 @@ data class CaretText(
     }
 
     /**
+     * Where Up ([up]) or Down puts the caret (#1241): the same column on the
+     * line above or below, cut to that line's length, and the buffer's start
+     * or end from its first or last line. A one-line buffer's Up and Down are
+     * its ends, as they always were. Lines are the text's own, split at
+     * newlines, not the ones a narrow box wraps it into.
+     */
+    fun lineStep(up: Boolean): Int {
+        val i = at
+        val start = lineStartOf(i)
+        val column = i - start
+        if (up) {
+            if (start == 0) return 0
+            val above = lineStartOf(start - 1)
+            return clamp(minOf(above + column, start - 1))
+        }
+        val end = text.indexOf('\n', i).let { if (it < 0) return text.length else it }
+        val next = end + 1
+        val nextEnd = text.indexOf('\n', next).let { if (it < 0) text.length else it }
+        return clamp(minOf(next + column, nextEnd))
+    }
+
+    /** The start ([end] false) or end of the line the caret is on: Home and End in a buffer of several lines (#1241). */
+    fun lineEdge(end: Boolean): Int {
+        val i = at
+        return if (end) text.indexOf('\n', i).let { if (it < 0) text.length else it } else lineStartOf(i)
+    }
+
+    private fun lineStartOf(index: Int): Int =
+        if (index <= 0) 0 else text.lastIndexOf('\n', index - 1) + 1
+
+    /**
      * The caret moved [delta] characters, clamped to the buffer's ends. With
      * [extend] the anchor stays put and the selection grows or shrinks; without
      * it a selection collapses to the end the arrow points at, as in any field.
@@ -375,6 +406,13 @@ enum class CaptureTarget(
     /** The clipboard panel's clip editor: free text, newlines and all. */
     CLIP_EDIT(takesWords = true, prose = true),
 
+    /**
+     * A new clip typed in the strip's place (#1339), from the floating
+     * button: text copied down by hand off the screen. One line, and Enter
+     * keeps it.
+     */
+    CLIP_WRITE(takesWords = true, prose = true),
+
     /** The clipboard's Combine (#612): what goes between the clips. Punctuation, not words. */
     CLIP_JOINER(takesWords = false),
 
@@ -385,6 +423,13 @@ enum class CaptureTarget(
     CLIP_APPEND(takesWords = false),
     /** The snippets panel's search pill (#471). */
     SNIPPET_SEARCH(takesWords = true),
+
+    /**
+     * The fill-in row of a snippet that asks for `{ask:Name}` values as it
+     * expands: one answer at a time, one line; Enter moves on, and on the last
+     * field inserts the snippet.
+     */
+    SNIPPET_ASK(takesWords = true),
 
     /** The Notes panel's search pill (#560). */
     NOTE_SEARCH(takesWords = true),
@@ -494,7 +539,13 @@ enum class CaptureTarget(
      */
     val handsKeysToApp: Boolean
         get() = this != TYPING_TEST && this != WORD_SPELL && this != TOOLBOX_SEARCH &&
-            this != TOOLBOX_FOLDER_NAME && this != LAUNCHER_FOLDER_NAME
+            this != TOOLBOX_FOLDER_NAME && this != LAUNCHER_FOLDER_NAME &&
+            // The snippet waits to go in at the app's caret: typing there
+            // first would put the answer somewhere else entirely.
+            this != SNIPPET_ASK &&
+            // A clip written off the screen is the point of the keys being
+            // up; the app behind may have no field, and must not be touched.
+            this != CLIP_WRITE
 
     /**
      * Whether the field's key rows can be put down to see the panel under them

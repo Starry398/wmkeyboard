@@ -1,12 +1,16 @@
 package com.wasimaster.wmkeyboard.app
 
 import com.wasimaster.wmkeyboard.core.voice.whisper.WhisperCatalog
+import com.wasimaster.wmkeyboard.core.ui.DisabledReason
+import com.wasimaster.wmkeyboard.core.download.DataMirror
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import android.widget.Toast
+import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -96,8 +100,6 @@ internal fun PrivacySettings(
     onNavigate: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    // Decides which rows the group holds; the rows read everything else.
-    val learnOn = settings.watch { it.learnFromTyping }
     // An unnamed group has no SectionHeader to hold it off the top bar, so the
     // breathing room a named group gets for free is spelled out here.
     Spacer(Modifier.height(12.dp))
@@ -137,10 +139,89 @@ internal fun PrivacySettings(
             ) { onNavigate(AppLockTargets.ROUTE) }
         }
     }
+    // Learning moved to Typing › Suggestions and Android backup to Backup &
+    // restore (#134): Privacy keeps what is about privacy itself.
     SettingsGroup(
-        stringResource(R.string.privacy_learning_group_title),
+        stringResource(R.string.privacy_incognito_group_title),
         info = stringResource(R.string.privacy_on_device_info),
     ) {
+        item {
+            ToggleSetting(
+                R.string.privacy_incognito_title,
+                stringResource(R.string.privacy_incognito_subtitle),
+                settings.watch { it.incognito },
+                info = stringResource(R.string.privacy_incognito_info),
+                default = SettingsDefaults.incognito,
+            ) { scope.launch { repository.setIncognito(it) } }
+        }
+        item(level = SettingLevel.STANDARD) {
+            ToggleSetting(
+                R.string.privacy_auto_incognito_title,
+                stringResource(R.string.privacy_auto_incognito_subtitle),
+                settings.watch { it.autoIncognito },
+                info = stringResource(AUTO_INCOGNITO_INFO),
+                default = SettingsDefaults.autoIncognito,
+            ) { scope.launch { repository.setAutoIncognito(it) } }
+        }
+        // #1215: the keyboard out of screenshots where what is typed is private.
+        item(level = SettingLevel.STANDARD) {
+            ToggleSetting(
+                R.string.privacy_secure_window_title,
+                stringResource(R.string.privacy_secure_window_subtitle),
+                settings.watch { it.layoutBehavior.secureWindow },
+                info = stringResource(R.string.privacy_secure_window_info),
+                default = SettingsDefaults.layoutBehavior.secureWindow,
+            ) { scope.launch { repository.setSecureWindow(it) } }
+        }
+    }
+    IncognitoAppsGroup(repository, settings)
+    OtherAppsGroup(repository, onNavigate)
+    // F-Droid's opt-in and the offline build's import are what a feature's
+    // message points to, so they show at every depth; the checksum switch,
+    // which is for one rare situation, stays with Everything.
+    val libraryChoice = NativeDelivery.active && (NativeConsent.downloadsNeedOptIn || !InternetPermission.granted)
+    SettingsGroup(
+        stringResource(R.string.privacy_downloads_group_title),
+        level = if (libraryChoice) SettingLevel.BASIC else SettingLevel.STANDARD,
+    ) {
+        item(level = SettingLevel.STANDARD, weight = 2) { DownloadMirrorRow(repository, settings) }
+        item(level = SettingLevel.ADVANCED) { VerifyChecksumsRow(repository, settings) }
+        item(visible = FeatureLibraryList.offered) { FeatureLibrariesNavRow() }
+        item { FeatureLibrariesRows() }
+    }
+    SettingsGroup(stringResource(R.string.privacy_data_group_title)) {
+        item {
+            ActionRow(
+                title = R.string.privacy_delete_learned_words_title,
+                subtitle = stringResource(R.string.privacy_delete_learned_words_subtitle),
+                action = stringResource(R.string.privacy_delete_learned_words_action),
+                confirm = stringResource(R.string.privacy_delete_learned_words_confirm),
+                lock = AppLockTargets["action_delete_learned_words"],
+            ) {
+                scope.launch {
+                    repository.clearLearnedData()
+                    // The Chinese, Japanese and Cantonese picks are one of the
+                    // files the repository deletes, but its live store is a
+                    // `:core:input` object that `:core:settings` cannot reach,
+                    // so the in-memory copy in this process is dropped here.
+                    CjkLearning.store?.clear()
+                }
+            }
+        }
+    }
+}
+
+/**
+ * What the keyboard learns from typing, and how it shares words with Android's
+ * own dictionary (#134: on Typing › Suggestions, beside the personal
+ * dictionary, rather than on Privacy).
+ */
+@Composable
+internal fun LearningGroup(repository: SettingsRepository, settings: LiveSettings) {
+    val scope = rememberCoroutineScope()
+    // Decides which rows the group holds; the rows read everything else.
+    val learnOn = settings.watch { it.learnFromTyping }
+    SettingsGroup(stringResource(R.string.privacy_learning_group_title)) {
         item {
             ToggleSetting(
                 R.string.privacy_learn_typing_title,
@@ -179,26 +260,13 @@ internal fun PrivacySettings(
                 default = SettingsDefaults.suggestionStrip.expandUserDictShortcuts,
             ) { scope.launch { repository.setExpandUserDictShortcuts(it) } }
         }
-        item {
-            ToggleSetting(
-                R.string.privacy_incognito_title,
-                stringResource(R.string.privacy_incognito_subtitle),
-                settings.watch { it.incognito },
-                info = stringResource(R.string.privacy_incognito_info),
-                default = SettingsDefaults.incognito,
-            ) { scope.launch { repository.setIncognito(it) } }
-        }
-        item(level = SettingLevel.STANDARD) {
-            ToggleSetting(
-                R.string.privacy_auto_incognito_title,
-                stringResource(R.string.privacy_auto_incognito_subtitle),
-                settings.watch { it.autoIncognito },
-                info = stringResource(AUTO_INCOGNITO_INFO),
-                default = SettingsDefaults.autoIncognito,
-            ) { scope.launch { repository.setAutoIncognito(it) } }
-        }
     }
-    IncognitoAppsGroup(repository, settings)
+}
+
+/** Android's own backup switch, on the Backup & restore screen (#134). */
+@Composable
+internal fun AndroidBackupGroup(repository: SettingsRepository, settings: LiveSettings) {
+    val scope = rememberCoroutineScope()
     SettingsGroup(stringResource(R.string.privacy_backup_group_title)) {
         item(level = SettingLevel.STANDARD) {
             ToggleSetting(
@@ -210,39 +278,24 @@ internal fun PrivacySettings(
             ) { scope.launch { repository.setCloudBackup(it) } }
         }
     }
-    OtherAppsGroup(repository, onNavigate)
-    // F-Droid's opt-in and the offline build's import are what a feature's
-    // message points to, so they show at every depth; the checksum switch,
-    // which is for one rare situation, stays with Everything.
-    val libraryChoice = NativeDelivery.active && (NativeConsent.downloadsNeedOptIn || !InternetPermission.granted)
-    SettingsGroup(
-        stringResource(R.string.privacy_downloads_group_title),
-        level = if (libraryChoice) SettingLevel.BASIC else SettingLevel.ADVANCED,
-    ) {
-        item(level = SettingLevel.ADVANCED) { VerifyChecksumsRow(repository, settings) }
-        item(visible = FeatureLibraryList.offered) { FeatureLibrariesNavRow() }
-        item { FeatureLibrariesRows() }
-    }
-    SettingsGroup(stringResource(R.string.privacy_data_group_title)) {
-        item {
-            ActionRow(
-                title = R.string.privacy_delete_learned_words_title,
-                subtitle = stringResource(R.string.privacy_delete_learned_words_subtitle),
-                action = stringResource(R.string.privacy_delete_learned_words_action),
-                confirm = stringResource(R.string.privacy_delete_learned_words_confirm),
-                lock = AppLockTargets["action_delete_learned_words"],
-            ) {
-                scope.launch {
-                    repository.clearLearnedData()
-                    // The Chinese, Japanese and Cantonese picks are one of the
-                    // files the repository deletes, but its live store is a
-                    // `:core:input` object that `:core:settings` cannot reach,
-                    // so the in-memory copy in this process is dropped here.
-                    CjkLearning.store?.clear()
-                }
-            }
-        }
-    }
+}
+
+/**
+ * A GitHub proxy every GitHub download tries first (#1045): for anyone GitHub
+ * is blocked or crawling for. The hint says when what is typed can't be used.
+ */
+@Composable
+private fun DownloadMirrorRow(repository: SettingsRepository, settings: LiveSettings) {
+    val stored = settings.watch { it.selfHosted.downloadMirror }
+    val usable = stored.isBlank() || DataMirror.isUsableProxy(stored)
+    TextFieldSetting(
+        label = stringResource(R.string.privacy_download_mirror_title),
+        value = stored,
+        hint = stringResource(
+            if (usable) R.string.privacy_download_mirror_hint else R.string.privacy_download_mirror_invalid,
+        ),
+        default = "",
+    ) { repository.setDownloadMirror(it) }
 }
 
 /**
@@ -518,6 +571,24 @@ internal fun VoiceSettings(repository: SettingsRepository, settings: LiveSetting
                 default = SettingsDefaults.voiceBar.aiTidy,
             ) { scope.launch { repository.setVoiceAiTidy(it) } }
         }
+        item {
+            ToggleSetting(
+                R.string.voice_mask_swearing_title,
+                stringResource(R.string.voice_mask_swearing_subtitle),
+                settings.watch { it.voiceBar.maskSwearing },
+                info = stringResource(R.string.voice_mask_swearing_info),
+                default = SettingsDefaults.voiceBar.maskSwearing,
+            ) { scope.launch { repository.setVoiceMaskSwearing(it) } }
+        }
+        item(level = SettingLevel.ADVANCED) {
+            ToggleSetting(
+                R.string.voice_suppress_symbols_title,
+                stringResource(R.string.voice_suppress_symbols_subtitle),
+                settings.watch { it.voiceBar.suppressSymbols },
+                info = stringResource(R.string.voice_suppress_symbols_info),
+                default = SettingsDefaults.voiceBar.suppressSymbols,
+            ) { scope.launch { repository.setVoiceSuppressSymbols(it) } }
+        }
     }
     // The keyboard's engines for every other app's microphone (#1142).
     SettingsGroup(stringResource(R.string.voice_other_apps_group)) {
@@ -535,7 +606,7 @@ internal fun VoiceSettings(repository: SettingsRepository, settings: LiveSetting
             NavRow(
                 R.string.voice_system_input_pick_title,
                 stringResource(R.string.voice_system_input_pick_subtitle),
-            ) { openVoiceInputSettings(context) }
+            ) { openVoiceInputSettings(context, R.string.voice_system_input_pick_hint) }
         }
     }
     // What most people never change: kept in reach, out of the way.
@@ -547,6 +618,7 @@ internal fun VoiceSettings(repository: SettingsRepository, settings: LiveSetting
                 R.string.voice_hold_picks_title,
                 R.string.voice_resume_title,
                 R.string.voice_pause_media_title,
+                R.string.voice_start_sound_title,
                 R.string.voice_mic_switch_title,
                 R.string.voice_engine_picker_title,
             ).map { stringResource(it) }.joinToString(", ")
@@ -578,6 +650,11 @@ internal fun VoiceSettings(repository: SettingsRepository, settings: LiveSetting
                 info = stringResource(R.string.voice_pause_media_info),
                 default = SettingsDefaults.voiceBar.pauseMedia,
             ) { scope.launch { repository.setVoicePauseMedia(it) } }
+        }
+        item(level = SettingLevel.STANDARD) {
+            VoiceStartSoundRow(settings.watch { it.voiceBar.startSound }) { picked ->
+                scope.launch { repository.setVoiceStartSound(picked) }
+            }
         }
         item(level = SettingLevel.ADVANCED) {
             ToggleSetting(
@@ -678,9 +755,9 @@ internal fun VoiceSettings(repository: SettingsRepository, settings: LiveSetting
  * is picked once **Voice input for other apps** is on. Phones file it in
  * different places, so the nearest one that opens is used: voice input,
  * then default apps, where the digital assistant row holds it, then
- * Settings itself.
+ * Settings itself. [hint] says which row on that page to pick.
  */
-internal fun openVoiceInputSettings(context: Context) {
+internal fun openVoiceInputSettings(context: Context, @StringRes hint: Int? = null) {
     val tries = listOf(
         Settings.ACTION_VOICE_INPUT_SETTINGS,
         Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
@@ -690,7 +767,13 @@ internal fun openVoiceInputSettings(context: Context) {
         val opened = runCatching {
             context.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }.isSuccess
-        if (opened) return
+        if (opened) {
+            // Recent Android has no page of voice input's own: the action
+            // opens the digital assistant page, with Voice input as a row near
+            // its foot (#1276). Without a word it reads as the wrong page.
+            if (hint != null) Toast.makeText(context, hint, Toast.LENGTH_LONG).show()
+            return
+        }
     }
 }
 
@@ -981,6 +1064,15 @@ internal fun ClipboardSettings(
         }
         item {
             ToggleSetting(
+                R.string.clipboard_backspace_undoes_paste_title,
+                stringResource(R.string.clipboard_backspace_undoes_paste_subtitle),
+                settings.watch { it.clipboard.backspaceUndoesPaste },
+                info = stringResource(R.string.clipboard_backspace_undoes_paste_info),
+                default = SettingsDefaults.clipboard.backspaceUndoesPaste,
+            ) { scope.launch { repository.setClipboardBackspaceUndoesPaste(it) } }
+        }
+        item {
+            ToggleSetting(
                 R.string.clipboard_type_tags_title,
                 stringResource(R.string.clipboard_type_tags_subtitle),
                 settings.watch { it.clipboard.typeTags },
@@ -1087,6 +1179,20 @@ internal fun ClipboardSettings(
             ) { scope.launch { repository.setToastOnCopy(it) } }
         }
     }
+    // The shared board (#1201) lives with the places it uses, on Backup &
+    // restore; this row at the bottom only points there.
+    val boardOn = settings.watch { s ->
+        s.clipboard.boardLocation.let { id -> id.isNotEmpty() && s.autoBackup.locations.any { it.id == id } }
+    }
+    SettingsGroup {
+        item {
+            NavRow(
+                R.string.clipboard_board_group,
+                stringResource(if (boardOn) R.string.clipboard_board_link_on else R.string.clipboard_board_link_off),
+                route = "backup",
+            ) { onNavigate("backup") }
+        }
+    }
 }
 
 /**
@@ -1102,6 +1208,7 @@ internal fun ClipboardHistorySettings(
     // What decides which rows the groups hold; each row reads its own value.
     val historyOn = settings.watch { it.clipboard.history }
     val userScreenshots = settings.watch { it.clipboard.userScreenshots }
+    val textOnly = settings.watch { it.clipboard.textOnly }
     val trackSource = settings.watch { it.clipboard.trackSource }
     val numberFormat = stringResource(R.string.values_number)
     val hoursFormat = stringResource(R.string.values_hours)
@@ -1205,6 +1312,16 @@ internal fun ClipboardHistorySettings(
     // Nothing is stored with history off, so there is nothing for these to
     // ride along with; the group goes rather than standing empty.
     if (historyOn) SettingsGroup(stringResource(R.string.clipboard_sources_group)) {
+        // Text only (gap list item 25): pictures, videos and files stay on the
+        // system clipboard and out of history, screenshots included.
+        if (historyOn) item {
+            ToggleSetting(
+                R.string.clipboard_text_only_title,
+                stringResource(R.string.clipboard_text_only_subtitle),
+                textOnly,
+                default = SettingsDefaults.clipboard.textOnly,
+            ) { on -> scope.launch { repository.setClipboardTextOnly(on) } }
+        }
         // Screenshots, the source app and the paste chip are all read as a
         // clip is being stored, and nothing is stored with history off. The
         // Play build has no photos permission to ask for, so no screenshots.
@@ -1213,7 +1330,9 @@ internal fun ClipboardHistorySettings(
             ToggleSetting(
                 R.string.clipboard_screenshots_title,
                 stringResource(R.string.clipboard_screenshots_subtitle),
-                userScreenshots,
+                userScreenshots && !textOnly,
+                enabled = !textOnly,
+                disabledReason = if (textOnly) DisabledReason(stringResource(R.string.clipboard_screenshots_text_only)) else null,
                 default = SettingsDefaults.clipboard.userScreenshots,
             ) { on ->
                 scope.launch { repository.setClipboardUserScreenshots(on) }
@@ -1227,7 +1346,7 @@ internal fun ClipboardHistorySettings(
         // The guard sits outside item {} on purpose: an item whose body
         // draws nothing still gets its own card, which showed up as a
         // sliver of empty surface once the permission was granted.
-        if (historyOn && userScreenshots && ChannelFeatures.SCREENSHOT_CLIPS &&
+        if (historyOn && userScreenshots && !textOnly && ChannelFeatures.SCREENSHOT_CLIPS &&
             !screenshotsGranted
         ) {
             item {
@@ -1573,6 +1692,8 @@ private fun clipHoldActionLabels(): Map<ClipHoldAction, String> = ClipHoldAction
         when (it) {
             ClipHoldAction.DETAILS -> ImeR.string.ime_clip_details_desc
             ClipHoldAction.PASTE_NEXT -> ImeR.string.ime_clip_paste_next
+            ClipHoldAction.COLLECT -> ImeR.string.ime_clip_collect
+            ClipHoldAction.SEND_TO_BOARD -> ImeR.string.ime_clip_send_to_board
             ClipHoldAction.SELECT -> ImeR.string.ime_clip_select
             ClipHoldAction.REORDER -> ImeR.string.ime_clip_reorder
             ClipHoldAction.SHOW_IN_HISTORY -> ImeR.string.ime_clip_show_in_history
@@ -1583,9 +1704,51 @@ private fun clipHoldActionLabels(): Map<ClipHoldAction, String> = ClipHoldAction
             ClipHoldAction.WEB_SEARCH -> ImeR.string.ime_clip_search_web
             ClipHoldAction.WIKIPEDIA -> ImeR.string.ime_clip_search_wikipedia
             ClipHoldAction.OPEN_LINK -> ImeR.string.ime_clip_open_link
+            ClipHoldAction.COMPOSE_EMAIL -> ImeR.string.ime_clip_compose_email
             ClipHoldAction.EXTRACT -> ImeR.string.ime_clip_extract_parts
             ClipHoldAction.PIN -> ImeR.string.ime_clip_pin
             ClipHoldAction.DELETE -> CommonR.string.common_delete
         },
     )
+}
+
+/**
+ * The sound the microphone opens with (#1260), picked in Android's own sound
+ * picker, which lists the phone's notification sounds and lets the user add
+ * one of their own. "None" in the picker is no sound, the default.
+ */
+@Composable
+private fun VoiceStartSoundRow(uri: String, onPick: (String) -> Unit) {
+    val context = LocalContext.current
+    val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode != android.app.Activity.RESULT_OK) return@rememberLauncherForActivityResult
+        @Suppress("DEPRECATION")
+        val picked: Uri? = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            result.data?.getParcelableExtra(android.media.RingtoneManager.EXTRA_RINGTONE_PICKED_URI, Uri::class.java)
+        } else {
+            result.data?.getParcelableExtra(android.media.RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+        }
+        onPick(picked?.toString().orEmpty())
+    }
+    val name = if (uri.isEmpty()) {
+        stringResource(R.string.voice_start_sound_none)
+    } else {
+        remember(uri) {
+            runCatching { android.media.RingtoneManager.getRingtone(context, Uri.parse(uri))?.getTitle(context) }.getOrNull()
+        } ?: stringResource(R.string.voice_start_sound_custom)
+    }
+    NavRow(
+        R.string.voice_start_sound_title,
+        stringResource(R.string.voice_start_sound_subtitle),
+        value = name,
+    ) {
+        val intent = Intent(android.media.RingtoneManager.ACTION_RINGTONE_PICKER)
+            .putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_TYPE, android.media.RingtoneManager.TYPE_NOTIFICATION)
+            .putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
+            .putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, false)
+            .putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, uri.takeIf { it.isNotEmpty() }?.let(Uri::parse))
+        runCatching { launcher.launch(intent) }
+    }
 }

@@ -85,7 +85,9 @@ import androidx.compose.ui.unit.sp
 import com.wasimaster.wmkeyboard.common.R as CommonR
 import com.wasimaster.wmkeyboard.core.clipboard.clipPreviewText
 import com.wasimaster.wmkeyboard.core.icons.symbols.automirrored.outlined.Subject
+import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Alarm
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Add
+import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.AttachFile
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Check
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.ContentCopy
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Edit
@@ -106,6 +108,9 @@ import com.wasimaster.wmkeyboard.core.notes.NoteChecklist
 import com.wasimaster.wmkeyboard.core.notes.NoteSort
 import com.wasimaster.wmkeyboard.core.notes.NoteTag
 import com.wasimaster.wmkeyboard.core.notes.NoteTagPalette
+import com.wasimaster.wmkeyboard.core.notes.assist.NoteHighlight
+import com.wasimaster.wmkeyboard.core.notes.assist.NoteReminder
+import com.wasimaster.wmkeyboard.core.notes.assist.RelatedHit
 import com.wasimaster.wmkeyboard.core.settings.NotesPanelLayout
 import com.wasimaster.wmkeyboard.core.theme.FrostSurface
 import com.wasimaster.wmkeyboard.core.ui.SwipeAction
@@ -155,6 +160,8 @@ data class NotesCallbacks(
     val onEditDone: () -> Unit = {},
     val onEditCancel: () -> Unit = {},
     val onMarkdown: (NoteMarkdownAction) -> Unit = {},
+    /** The editor's Paste chip: the clipboard's text into the body at the caret. */
+    val onPaste: () -> Unit = {},
     /** A tag on or off a note; the palette index is what a suggested tag is born with. */
     val onTagToggle: (Long, String, Int) -> Unit = { _, _, _ -> },
     val onTagPickerToggle: () -> Unit = {},
@@ -184,6 +191,22 @@ data class NotesCallbacks(
     val onUndoDismiss: () -> Unit = {},
     /** A chip on the Quick note row (#864): a note to add to, or null for a new one. */
     val onQuickPick: (Long?) -> Unit = {},
+    /** The jot pill's attach button: a new note holding the field's text (its selection, else all of it). */
+    val onNewFromField: () -> Unit = {},
+    /** The assistant's suggested heading becomes the note's title (#1293). */
+    val onAssistHeading: (Long) -> Unit = {},
+    /** The suggested heading waved away. */
+    val onAssistHeadingDismiss: (Long) -> Unit = {},
+    /** Summarise the note now, or again. */
+    val onAssistSummarize: (Long) -> Unit = {},
+    /** A key detail tapped: typed into the field. */
+    val onAssistDetail: (NoteHighlight) -> Unit = {},
+    /** "Remind me" for a deadline or a birthday. */
+    val onAssistRemind: (NoteReminder) -> Unit = {},
+    /** A related note opens; a related pinned clip pastes. */
+    val onAssistRelated: (RelatedHit) -> Unit = {},
+    /** Make a study deck out of the note. */
+    val onAssistDeck: (Long) -> Unit = {},
 )
 
 /** Settings routes the panel links to; `SettingsRoutesTest` scans these constants. */
@@ -536,10 +559,16 @@ private fun NotesList(state: KeyboardUiState, callbacks: NotesCallbacks, onOpenR
             else -> notes.items.filterNot { it.pinned }
         }
     }
-    // What the hardware ring walks, in the order it is drawn.
+    // What the hardware ring walks, in the order it is drawn: a search's
+    // passages first (Enter types one, as a tap does), then the notes.
     val ordered = remember(carousel, rest) { carousel + rest }
-    PanelFocusTarget(panel = PanelMode.NOTES, region = FocusRegion.RESULTS, count = ordered.size, columns = 1) { index ->
-        ordered.getOrNull(index)?.let { callbacks.onOpen(it.id) }
+    val passageCount = notes.passages.size
+    PanelFocusTarget(panel = PanelMode.NOTES, region = FocusRegion.RESULTS, count = passageCount + ordered.size, columns = 1) { index ->
+        if (index < passageCount) {
+            notes.passages.getOrNull(index)?.let(callbacks.onPassageInsert)
+        } else {
+            ordered.getOrNull(index - passageCount)?.let { callbacks.onOpen(it.id) }
+        }
     }
     PanelFocusTarget(panel = PanelMode.NOTES, region = FocusRegion.ACTIONS, count = 0, columns = 1) {}
     val focusedRow = state.focusedIndex()
@@ -710,8 +739,16 @@ private fun ShelfBody(
     // The passages, then the label and the shelf, sit ahead of the grid's own cards.
     val lead = passageItemCount(passages)
     val head = lead + if (carousel.isNotEmpty()) 2 else 0
+    // The ring counts the passages first, then the shelf, then the grid.
+    val p = passages.size
     ScrollFocusIntoView(focusedRow) { index ->
-        gridState.animateScrollToItem(if (index < carousel.size) lead else head + (index - carousel.size))
+        gridState.animateScrollToItem(
+            when {
+                index < p -> 1 + index
+                index - p < carousel.size -> lead
+                else -> head + (index - p - carousel.size)
+            },
+        )
     }
     LazyVerticalStaggeredGrid(
         state = gridState,
@@ -732,7 +769,7 @@ private fun ShelfBody(
                 ShelfLabel(Icons.Outlined.FormatQuote, stringResource(R.string.ime_notes_passages_section))
             }
             items(count = passages.size, key = { passageKey(passages, it) }, span = { StaggeredGridItemSpan.FullLine }) { index ->
-                PassageRow(passages[index], index, callbacks)
+                PassageRow(passages[index], index, callbacks, focused = focusedRow == index)
             }
         }
         if (carousel.isNotEmpty()) {
@@ -749,7 +786,7 @@ private fun ShelfBody(
                             now = now,
                             tagColours = tagColours,
                             index = index,
-                            focused = focusedRow == index,
+                            focused = focusedRow == p + index,
                             held = notes.held == note.id,
                             callbacks = callbacks,
                             onOpenRoute = onOpenRoute,
@@ -766,7 +803,7 @@ private fun ShelfBody(
                 now = now,
                 tagColours = tagColours,
                 index = carousel.size + index,
-                focused = focusedRow == carousel.size + index,
+                focused = focusedRow == p + carousel.size + index,
                 held = notes.held == note.id,
                 callbacks = callbacks,
                 onOpenRoute = onOpenRoute,
@@ -805,8 +842,8 @@ private fun passageKey(passages: List<NotePassageHit>, index: Int): String = "pa
  * as the note has it; a hold opens the note in the editor at the match.
  */
 @Composable
-private fun PassageRow(hit: NotePassageHit, index: Int, callbacks: NotesCallbacks, modifier: Modifier = Modifier) {
-    NotePassageCard(hit, index, onInsert = callbacks.onPassageInsert, onOpen = callbacks.onPassageOpen, modifier = modifier)
+private fun PassageRow(hit: NotePassageHit, index: Int, callbacks: NotesCallbacks, modifier: Modifier = Modifier, focused: Boolean = false) {
+    NotePassageCard(hit, index, onInsert = callbacks.onPassageInsert, onOpen = callbacks.onPassageOpen, modifier = modifier, focused = focused)
 }
 
 /**
@@ -930,6 +967,7 @@ private fun ShelfCard(
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
                 NoteGlyph(note, look, size = 14.dp)
                 if (look.progress != null || note.locked) Spacer(Modifier.width(5.dp))
+                NoteReminderMark(state, note, size = 13.dp)
                 Text(look.footer, color = kb.secondaryText, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -996,6 +1034,7 @@ private fun GridCard(
                 Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                     NoteGlyph(note, look, size = 14.dp)
                     if (look.progress != null || note.locked) Spacer(Modifier.width(5.dp))
+                    NoteReminderMark(state, note, size = 13.dp)
                     Text(look.footer, color = kb.secondaryText, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                     if (note.archived && state.notes.filter != NotesFilter.Archived) {
                         Spacer(Modifier.width(5.dp))
@@ -1066,7 +1105,17 @@ private fun NoteCard(
                 .combinedClickable(
                     interactionSource = source,
                     indication = null,
-                    onClick = { if (held) callbacks.onHold(null) else callbacks.onOpen(note.id) },
+                    onClick = {
+                        // With "Tap a note to insert it" (#1333) a tap types
+                        // the note in; a held note opens instead.
+                        val inserts = state.settings.notes.tapInserts
+                        when {
+                            held && inserts -> callbacks.onOpen(note.id)
+                            held -> callbacks.onHold(null)
+                            inserts -> callbacks.onInsert(note.id)
+                            else -> callbacks.onOpen(note.id)
+                        }
+                    },
                     onLongClick = {
                         feedback()
                         callbacks.onHold(if (held) null else note.id)
@@ -1086,6 +1135,34 @@ private fun Modifier.noteTint(colour: Color): Modifier =
         val x = if (layoutDirection == LayoutDirection.Ltr) 0f else size.width - w
         drawRect(colour, Offset(x, 0f), Size(w, size.height))
     }
+
+/**
+ * An alarm on the card of a note with a deadline or a birthday still ahead
+ * (#1293), the ones the assistant's Remind me chips offer, so the shelf
+ * shows which notes have one without opening them. Only with the notes
+ * assistant and its reminders on, and never on a locked note, whose text is
+ * not read. Worked out once per edit of the note.
+ */
+@Composable
+private fun NoteReminderMark(state: KeyboardUiState, note: Note, size: Dp) {
+    val assist = state.settings.notes.assist
+    if (!assist.enabled || !assist.reminders || note.locked) return
+    val due = remember(note.id, note.updatedAt) {
+        val now = System.currentTimeMillis()
+        com.wasimaster.wmkeyboard.core.notes.assist.NoteReminders.upcoming(
+            com.wasimaster.wmkeyboard.core.notes.assist.NoteHighlights.find(note.body, note.updatedAt),
+            now,
+            limit = 1,
+        ).isNotEmpty()
+    }
+    if (!due) return
+    Icon(
+        Icons.Outlined.Alarm,
+        contentDescription = stringResource(R.string.ime_notes_has_reminder),
+        tint = LocalKbTheme.current.accent,
+        modifier = Modifier.padding(end = 4.dp).size(size),
+    )
+}
 
 /** The checklist ring, or the lock, that leads a card's footer; nothing for a plain note. */
 @Composable
@@ -1119,7 +1196,9 @@ private fun TimelineBody(
     val listState = rememberLazyListState()
     // The passages' label, rows and the gap under them.
     val lead = passageItemCount(passages).let { if (it > 0) it + 1 else 0 }
-    ScrollFocusIntoView(focusedRow) { listState.animateScrollToItem(lead + it) }
+    // The ring counts the passages first, then the rows.
+    val p = passages.size
+    ScrollFocusIntoView(focusedRow) { listState.animateScrollToItem(if (it < p) 1 + it else lead + it - p) }
     val today = remember(now) { dayStart(now) }
     val days = remember(rows) { rows.map { dayStart(timelineStamp(it)) } }
     LazyColumn(
@@ -1137,7 +1216,7 @@ private fun TimelineBody(
                 ShelfLabel(Icons.Outlined.FormatQuote, stringResource(R.string.ime_notes_passages_section))
             }
             items(count = passages.size, key = { passageKey(passages, it) }) { index ->
-                PassageRow(passages[index], index, callbacks, Modifier.padding(top = 6.dp))
+                PassageRow(passages[index], index, callbacks, Modifier.padding(top = 6.dp), focused = focusedRow == index)
             }
             item(key = "passages-gap") { Spacer(Modifier.height(10.dp)) }
         }
@@ -1161,7 +1240,7 @@ private fun TimelineBody(
                     today = today,
                     tagColours = tagColours,
                     index = index,
-                    focused = focusedRow == index,
+                    focused = focusedRow == p + index,
                     held = notes.held == note.id,
                     callbacks = callbacks,
                     onOpenRoute = onOpenRoute,
@@ -1402,7 +1481,25 @@ private fun JotPill(state: KeyboardUiState, callbacks: NotesCallbacks, modifier:
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        Spacer(Modifier.width(8.dp))
+        // The field's text as a new note: what is being written, kept before
+        // it is sent. Not offered in a password field.
+        if (!state.secureField) {
+            val attach = stringResource(R.string.ime_notes_attach_field_desc)
+            Box(
+                Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .clickable {
+                        feedback()
+                        callbacks.onNewFromField()
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Outlined.AttachFile, contentDescription = attach, tint = kb.toolbarIcon, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.width(4.dp))
+        }
+        Spacer(Modifier.width(4.dp))
         Box(
             Modifier
                 .size(32.dp)
@@ -1682,6 +1779,9 @@ private fun NotesReadView(
                 )
             }
             Spacer(Modifier.height(6.dp))
+            state.notes.assist?.takeIf { it.noteId == note.id && !note.locked && !note.inTrash }?.let { assist ->
+                NoteAssistSection(state, note, assist, callbacks)
+            }
             when {
                 note.locked -> Column(
                     Modifier.fillMaxWidth().padding(vertical = 16.dp),
@@ -1700,7 +1800,21 @@ private fun NotesReadView(
                     modifier = Modifier.fillMaxWidth().clickable { if (!note.inTrash) callbacks.onEditStart(note.id, null) },
                 )
                 else -> {
-                    val body = remember(note.body, showAll) { if (showAll) note.body else readPrefix(note.body) }
+                    // Opened at a passage (#1099): the body from a few lines
+                    // above it, with a way back to the top.
+                    val from = state.notes.readFrom?.takeIf { state.notes.open == note.id }
+                        ?.coerceIn(0, note.body.length) ?: 0
+                    var fromTop by rememberSaveable(note.id, from) { mutableStateOf(from == 0) }
+                    val start = if (fromTop) 0 else from
+                    val lineShift = remember(note.body, start) { note.body.subSequence(0, start).count { it == '\n' } }
+                    if (start > 0) {
+                        ToolPanelChip(stringResource(R.string.ime_notes_show_from_start_action)) { fromTop = true }
+                        Spacer(Modifier.height(6.dp))
+                    }
+                    val body = remember(note.body, showAll, start) {
+                        val rest = if (start > 0) note.body.substring(start) else note.body
+                        if (showAll) rest else readPrefix(rest)
+                    }
                     val editable = !note.inTrash && note.body.length <= NoteEdit.EDITOR_MAX_LENGTH
                     // A long press selects, with Copy, Insert and Ask AI on its bar, as in Wikipedia.
                     val title = note.displayTitle()
@@ -1711,8 +1825,8 @@ private fun NotesReadView(
                             body,
                             ChatMarkdownColors(text = kb.modifierKeyText, dim = kb.secondaryText, codeBackground = kb.chip, link = kb.accent),
                             fontSize = 13.sp,
-                            onTaskToggle = if (note.inTrash) null else ({ task -> callbacks.onTaskToggle(note.id, task.line) }),
-                            onBlockTap = if (editable) ({ block -> callbacks.onEditStart(note.id, block.line) }) else null,
+                            onTaskToggle = if (note.inTrash) null else ({ task -> callbacks.onTaskToggle(note.id, task.line + lineShift) }),
+                            onBlockTap = if (editable) ({ block -> callbacks.onEditStart(note.id, block.line + lineShift) }) else null,
                             selectable = true,
                             ask = ask,
                         )
@@ -1727,7 +1841,7 @@ private fun NotesReadView(
                             onTap = if (editable) ({ callbacks.onEditStart(note.id, null) }) else null,
                         )
                     }
-                    if (!showAll && body.length < note.body.length) {
+                    if (!showAll && body.length < note.body.length - start) {
                         Spacer(Modifier.height(6.dp))
                         ToolPanelChip(stringResource(R.string.ime_notes_show_more_action)) { showAll = true }
                     }

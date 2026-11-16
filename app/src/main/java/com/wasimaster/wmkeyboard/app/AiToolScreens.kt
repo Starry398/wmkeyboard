@@ -260,6 +260,16 @@ internal fun AiToolSettings(
                     scope.launch { repository.setAiProviderKey(key, provider) }
                 }
             }
+            // When the one in use fails, ask the next in the list instead.
+            item(level = SettingLevel.ADVANCED) {
+                ToggleSetting(
+                    R.string.toolai_ai_fallback_title,
+                    stringResource(R.string.toolai_ai_fallback_subtitle),
+                    settings.watch { it.ai.fallbackNext },
+                    info = stringResource(R.string.toolai_ai_fallback_info),
+                    default = SettingsDefaults.ai.fallbackNext,
+                ) { scope.launch { repository.setAiFallbackNext(it) } }
+            }
         }
     }
     // The on-device model manager, each service's extra headers and its
@@ -594,7 +604,7 @@ internal fun AiToolSettings(
             NavRow(
                 R.string.toolai_assistant_pick_title,
                 stringResource(R.string.toolai_assistant_pick_subtitle),
-            ) { openVoiceInputSettings(context) }
+            ) { openVoiceInputSettings(context, R.string.toolai_assistant_pick_hint) }
         }
     }
     SettingsGroup(stringResource(R.string.toolai_ai_actions_group_title)) {

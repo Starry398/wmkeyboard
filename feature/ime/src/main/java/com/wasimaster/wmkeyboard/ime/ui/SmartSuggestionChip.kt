@@ -311,10 +311,19 @@ private fun narrowChipLabel(hit: SmartSuggest.SmartHit): String = when (hit.kind
     )
     // The face is the call: the phone icon beside the name says so.
     SmartSuggest.Kind.CONTACT -> hit.query
+    // "Open WhatsApp" (#656).
+    SmartSuggest.Kind.APP -> stringResource(R.string.ime_smart_open_app, hit.query)
     // "Repeat “no”", with the count in its own pill after it.
     SmartSuggest.Kind.REPEAT -> stringResource(R.string.ime_smart_repeat_offer, hit.query.replace("\n", "↵"))
     // A share link in the text: the face opens the panel on receiving it (#729).
     SmartSuggest.Kind.SEND_LINK -> stringResource(R.string.ime_smart_send_link)
+    // "@gif cats" (#1242): the tool's name and the words it will search for.
+    SmartSuggest.Kind.SEARCH -> stringResource(
+        R.string.ime_smart_search_offer,
+        // "@weather dhaka" names the plugin, not the Plugins tool.
+        (hit.prefill as? com.wasimaster.wmkeyboard.core.tools.ToolPrefill.Plugin)?.name ?: toolLabel(hit.tool),
+        hit.query,
+    )
     else -> stringResource(R.string.ime_smart_open_tool, toolLabel(hit.tool))
 }
 

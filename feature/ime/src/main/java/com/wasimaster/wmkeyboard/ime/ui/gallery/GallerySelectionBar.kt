@@ -59,8 +59,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.ImageLoader
 import coil3.compose.AsyncImage
+import com.wasimaster.wmkeyboard.ime.ui.frostGlass
+import com.wasimaster.wmkeyboard.core.theme.FrostSurface
 import com.wasimaster.wmkeyboard.core.icons.symbols.automirrored.outlined.Send
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Close
+import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.CloudUpload
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.ContentCopy
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Link
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Description
@@ -301,6 +304,7 @@ private fun CaptionBox(caption: String, typing: GalleryTextEntry?, modifier: Mod
         modifier
             .height(40.dp)
             .clip(shape)
+            .frostGlass(kb, shape, FrostSurface.CARDS)
             .background(kb.chip)
             .chipBorder(kb, shape)
             .clickable(onClick = onClick)
@@ -400,13 +404,20 @@ private fun SendButton(count: Int, enabled: Boolean, act: (GalleryAction) -> Uni
 
 /** Send's hold menu: every other way out of the bar. */
 @Composable
-internal fun SendMenu(hasCaption: Boolean, canShareToApp: Boolean, act: (GalleryAction) -> Unit, modifier: Modifier = Modifier) {
+internal fun SendMenu(
+    hasCaption: Boolean,
+    canShareToApp: Boolean,
+    act: (GalleryAction) -> Unit,
+    modifier: Modifier = Modifier,
+    canUploadToImmich: Boolean = false,
+) {
     val kb = LocalKbTheme.current
     val shape = kb.cardShape()
     Column(
         modifier
             .width(250.dp)
             .clip(shape)
+            .frostGlass(kb, shape, FrostSurface.CARDS)
             .background(kb.popup)
             .chipBorder(kb, shape)
             .padding(vertical = 4.dp),
@@ -422,6 +433,7 @@ internal fun SendMenu(hasCaption: Boolean, canShareToApp: Boolean, act: (Gallery
         entry(Icons.Outlined.ContentCopy, R.string.ime_gallery_copy, SendMode.COPY)
         entry(Icons.Outlined.Link, R.string.ime_gallery_send_as_link, SendMode.AS_LINK)
         entry(Icons.Outlined.SaveAlt, R.string.ime_gallery_save, SendMode.SAVE)
+        if (canUploadToImmich) entry(Icons.Outlined.CloudUpload, R.string.ime_gallery_upload_immich, SendMode.TO_IMMICH)
         entry(Icons.Outlined.Deselect, R.string.ime_gallery_clear_selection, null)
     }
 }
@@ -451,6 +463,7 @@ internal fun FallbackCard(count: Int, act: (GalleryAction) -> Unit, modifier: Mo
         modifier
             .padding(16.dp)
             .clip(shape)
+            .frostGlass(kb, shape, FrostSurface.CARDS)
             .background(kb.popup)
             .chipBorder(kb, shape)
             .padding(16.dp),

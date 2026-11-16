@@ -1,5 +1,14 @@
 package com.wasimaster.wmkeyboard.app
 
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.wasimaster.wmkeyboard.ime.ui.PluginIcon
+import com.wasimaster.wmkeyboard.ime.ui.toolColor
+import com.wasimaster.wmkeyboard.core.plugins.displayName
+import com.wasimaster.wmkeyboard.core.plugins.PluginStore
+import com.wasimaster.wmkeyboard.core.settings.pluginToolPlaceIn
+import com.wasimaster.wmkeyboard.core.settings.PluginToolPlace
+import com.wasimaster.wmkeyboard.core.settings.ToolKey
 import android.content.res.Resources
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -7,6 +16,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.SmartButton
+import androidx.compose.ui.res.pluralStringResource
 import com.wasimaster.wmkeyboard.core.settings.SettingsDefaults
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Close
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Search
@@ -20,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -54,33 +66,41 @@ import kotlinx.coroutines.launch
 // ---- tools ----
 
 /**
- * Whether a tool's settings page offers anything beyond the enable switch —
- * drives the "has more settings" marker on the tools list. Kept as the
- * caption-only exceptions so a new tool with options is marked by default.
+ * The tools whose page offers more than its enable switch, for the "has more
+ * settings" mark on the tools list (#43). Derived, not kept by hand: a row on
+ * a tool's page is in the settings search index under `tool/<NAME>` (search
+ * has to find it), so the tools with such rows, beyond the tool's own entry,
+ * are the tools with options. The hand-kept list this replaces had drifted:
+ * it left the media controls unmarked though their page has three rows.
+ *
+ * Built off the main thread from the index the path strip already keeps for
+ * the process; empty until then, so the marks appear a moment after the
+ * screen does rather than holding it up.
  */
-/**
- * Whether the tool's detail page offers anything beyond the enable switch —
- * gates the "has more settings" affordance in the tools list. Keep in sync
- * with [ToolDetailSettings]'s `when`: a tool whose page is just the toggle
- * (or a caption) doesn't earn the icon.
- */
-private fun toolHasOptions(tool: ToolbarTool): Boolean = tool !in ToolsWithoutOptions
-/** Asked once per row on a screen of sixty, so it is not built per call. */
-private val ToolsWithoutOptions: Set<ToolbarTool> =
-    setOf(
-        ToolbarTool.SETTINGS,
-        // Quick toggles/panels, not tools with settings of their own —
-        // their options all live elsewhere (Appearance, Typing).
-        ToolbarTool.THEMES, ToolbarTool.SOUND_HAPTICS, ToolbarTool.ONE_HANDED,
-        // Just an enable toggle — the transport lives on the keyboard panel,
-        // there is nothing to configure here.
-        ToolbarTool.MEDIA_CONTROL,
-        // Everything it changes is a Layout slider; the tool is only the
-        // in-place way to drag them.
-        ToolbarTool.RESIZE,
-        // A shortcut, like Settings: its page only leads to the Statistics screen.
-        ToolbarTool.STATISTICS,
-    )
+internal object ToolOptionMarks {
+    private val marks = kotlinx.coroutines.flow.MutableStateFlow<Pair<String, Set<ToolbarTool>>?>(null)
+
+    @Composable
+    fun current(): Set<ToolbarTool> {
+        val res = LocalContext.current.resources
+        val locales = res.configuration.locales.toLanguageTags()
+        val held by marks.collectAsState()
+        LaunchedEffect(locales) {
+            if (marks.value?.first == locales) return@LaunchedEffect
+            val found = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { derive(CrumbSiblingIndex.of(res)) }
+            marks.value = locales to found
+        }
+        return held?.takeIf { it.first == locales }?.second.orEmpty()
+    }
+
+    /** The tools [index] files rows under, other than each tool's own entry. */
+    internal fun derive(index: List<SettingsSearchEntry>): Set<ToolbarTool> =
+        index.asSequence()
+            .filter { it.route.startsWith("tool/") && it.weight != EntryWeight.TOOL }
+            .mapNotNull { entry -> entry.tool ?: ToolbarTool.entries.firstOrNull { "tool/${it.name}" == entry.route } }
+            .toHashSet()
+}
+
 /**
  * The name of a tool on its settings screen, as a string resource the caller
  * resolves while it draws.
@@ -99,7 +119,11 @@ internal fun toolTitle(tool: ToolbarTool): Int = when (tool) {
     ToolbarTool.RECENT_COPIES -> ImeR.string.ime_tool_recent_copies
     ToolbarTool.LEAVE_FIELD -> ImeR.string.ime_tool_leave_field
     ToolbarTool.SCREENSHOT -> ImeR.string.ime_tool_screenshot
+    ToolbarTool.PRIVACY_SHADE -> ImeR.string.ime_tool_privacy_shade
     ToolbarTool.QUICK_NOTE -> ImeR.string.ime_tool_quick_note
+    ToolbarTool.DEBUG_INFO -> ImeR.string.ime_tool_debug_info
+    ToolbarTool.HOMOPHONES -> ImeR.string.ime_tool_homophones
+    ToolbarTool.TYPE_CLIPBOARD -> ImeR.string.ime_tool_type_clipboard
     ToolbarTool.EMOJI_MIX -> ImeR.string.ime_tool_emoji_mix
     ToolbarTool.READ_BACK -> ImeR.string.ime_tool_read_back
     ToolbarTool.SNIPPETS -> ImeR.string.ime_tool_snippets
@@ -123,6 +147,8 @@ internal fun toolTitle(tool: ToolbarTool): Int = when (tool) {
     ToolbarTool.MUSIC_ID -> ImeR.string.ime_tool_music_id
     ToolbarTool.HOME_ASSISTANT -> ImeR.string.ime_tool_home_assistant
     ToolbarTool.SEND_FILES -> ImeR.string.ime_tool_send_files
+    ToolbarTool.FILES -> ImeR.string.ime_tool_files
+    ToolbarTool.TIMESTAMP -> ImeR.string.ime_tool_timestamp
     ToolbarTool.GALLERY -> ImeR.string.ime_tool_gallery
     ToolbarTool.CALENDAR -> ImeR.string.ime_tool_calendar
     ToolbarTool.INCOGNITO -> ImeR.string.ime_tool_incognito
@@ -185,6 +211,7 @@ internal fun toolTitle(tool: ToolbarTool): Int = when (tool) {
     ToolbarTool.SELECT_WORD -> ImeR.string.ime_tool_select_word
     ToolbarTool.SELECT_LINE -> ImeR.string.ime_tool_select_line
     ToolbarTool.SELECT_ALL -> CommonR.string.common_select_all
+    ToolbarTool.CLEAR_FIELD -> ImeR.string.ime_tool_clear_field
     ToolbarTool.SELECT_MODE -> ImeR.string.ime_tool_select_mode
     ToolbarTool.COPY -> ImeR.string.ime_tool_copy
     ToolbarTool.CUT -> ImeR.string.ime_tool_cut
@@ -201,7 +228,11 @@ internal fun toolDescription(tool: ToolbarTool): Int = when (tool) {
     ToolbarTool.RECENT_COPIES -> R.string.fonts_tool_recent_copies_desc
     ToolbarTool.LEAVE_FIELD -> R.string.fonts_tool_leave_field_desc
     ToolbarTool.SCREENSHOT -> R.string.fonts_tool_screenshot_desc
+    ToolbarTool.PRIVACY_SHADE -> R.string.fonts_tool_privacy_shade_desc
     ToolbarTool.QUICK_NOTE -> R.string.fonts_tool_quick_note_desc
+    ToolbarTool.DEBUG_INFO -> R.string.fonts_tool_debug_info_desc
+    ToolbarTool.HOMOPHONES -> R.string.fonts_tool_homophones_desc
+    ToolbarTool.TYPE_CLIPBOARD -> R.string.fonts_tool_type_clipboard_desc
     ToolbarTool.EMOJI_MIX -> R.string.fonts_tool_emoji_mix_desc
     ToolbarTool.READ_BACK -> R.string.fonts_tool_read_back_desc
     ToolbarTool.SNIPPETS -> R.string.fonts_tool_snippets_desc
@@ -287,6 +318,9 @@ internal fun toolDescription(tool: ToolbarTool): Int = when (tool) {
     ToolbarTool.SELECT_WORD -> R.string.fonts_tool_select_word_desc
     ToolbarTool.SELECT_LINE -> R.string.fonts_tool_select_line_desc
     ToolbarTool.SELECT_ALL -> R.string.fonts_tool_select_all_desc
+    ToolbarTool.CLEAR_FIELD -> R.string.fonts_tool_clear_field_desc
+    ToolbarTool.FILES -> R.string.files_tool_desc
+    ToolbarTool.TIMESTAMP -> R.string.fonts_tool_timestamp_desc
     ToolbarTool.SELECT_MODE -> R.string.fonts_tool_select_mode_desc
     ToolbarTool.COPY -> R.string.fonts_tool_copy_desc
     ToolbarTool.CUT -> R.string.fonts_tool_cut_desc
@@ -368,6 +402,9 @@ internal fun ToolsSettings(
     repository: SettingsRepository,
     settings: LiveSettings,
     query: String,
+    onCustomButtons: () -> Unit = {},
+    /** Opens a settings route: a plugin's page, from its row in the Plugins group. */
+    onOpenRoute: (String) -> Unit = {},
     onOpenTool: (ToolbarTool) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -421,6 +458,20 @@ internal fun ToolsSettings(
         return
     }
 
+    // The user's own buttons (#1213, #1236): shortcuts, switches and pages,
+    // which sit on the toolbar and in the toolbox beside the tools below.
+    val customCount = settings.watch { it.toolbox.customButtons.size }
+    NavRow(
+        title = R.string.custombuttons_title,
+        subtitle = if (customCount == 0) {
+            stringResource(R.string.custombuttons_nav_subtitle)
+        } else {
+            pluralStringResource(R.plurals.custombuttons_count, customCount, customCount)
+        },
+        route = CustomButtons.ROUTE,
+        icon = Icons.Outlined.SmartButton,
+        onClick = onCustomButtons,
+    )
     val colored = settings.watch { it.coloredToolIcons }
     ToggleSetting(
         title = R.string.tools_colored_icons_title,
@@ -473,6 +524,23 @@ internal fun ToolsSettings(
         checked = settings.watch { it.summonButton.boxClosesOutside },
         onChange = { scope.launch { repository.setFloatingBoxClosesOutside(it) } },
         default = SettingsDefaults.summonButton.boxClosesOutside,
+    )
+    // The box's buttons traded for throws (#1262): up closes, down moves it
+    // into the keyboard, a side tucks it.
+    ToggleSetting(
+        title = R.string.tools_box_gestures_title,
+        subtitle = stringResource(R.string.tools_box_gestures_subtitle),
+        checked = settings.watch { it.summonButton.boxGestures },
+        onChange = { scope.launch { repository.setFloatingBoxGestures(it) } },
+        default = SettingsDefaults.summonButton.boxGestures,
+    )
+    // A hold, then a drag, moves the box from anywhere on it (#1263).
+    ToggleSetting(
+        title = R.string.tools_box_hold_to_move_title,
+        subtitle = stringResource(R.string.tools_box_hold_to_move_subtitle),
+        checked = settings.watch { it.summonButton.boxHoldToMove },
+        onChange = { scope.launch { repository.setFloatingBoxHoldToMove(it) } },
+        default = SettingsDefaults.summonButton.boxHoldToMove,
     )
     // Panels as one group or two (#759). Above the groups it reshapes, so
     // the switch and what it changes are on screen together.
@@ -530,6 +598,8 @@ internal fun ToolsSettings(
             }
         }
     }
+    // Plugins that can be tools, after the built-in ones (see ToolKey).
+    PluginToolsGroup(repository, settings, onOpenRoute)
 }
 
 /**
@@ -593,7 +663,7 @@ internal fun ToolRow(
             subtitleFlies = true,
             trailing = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (toolHasOptions(tool)) {
+                    if (tool in ToolOptionMarks.current()) {
                         Icon(
                             Icons.Outlined.Tune,
                             contentDescription = optionsDesc,
@@ -628,7 +698,7 @@ private val PanelTools = listOf(
     ToolbarTool.TEXT_EDIT, ToolbarTool.TRACKPAD, ToolbarTool.NUMPAD, ToolbarTool.HANDWRITING,
     ToolbarTool.VOICE, ToolbarTool.CAMERA, ToolbarTool.GALLERY, ToolbarTool.DICTIONARY, ToolbarTool.VOCABULARY,
     ToolbarTool.LEARN_FROM_TEXT, ToolbarTool.FIND_REPLACE, ToolbarTool.GRAMMAR, ToolbarTool.APP_LAUNCHER, ToolbarTool.MEDIA_CONTROL,
-    ToolbarTool.MUSIC_ID, ToolbarTool.KDE_CONNECT, ToolbarTool.SEND_FILES,
+    ToolbarTool.MUSIC_ID, ToolbarTool.KDE_CONNECT, ToolbarTool.SEND_FILES, ToolbarTool.FILES,
 )
 
 /**
@@ -637,7 +707,7 @@ private val PanelTools = listOf(
  */
 private val ConnectPanels = setOf(
     ToolbarTool.CAMERA, ToolbarTool.GALLERY, ToolbarTool.APP_LAUNCHER, ToolbarTool.MEDIA_CONTROL, ToolbarTool.MUSIC_ID,
-    ToolbarTool.KDE_CONNECT, ToolbarTool.SEND_FILES,
+    ToolbarTool.KDE_CONNECT, ToolbarTool.SEND_FILES, ToolbarTool.FILES,
 )
 
 /**
@@ -705,14 +775,15 @@ private fun buildToolGroups(splitPanels: Boolean): List<Pair<Int, List<ToolbarTo
             ToolbarTool.UNDO, ToolbarTool.REDO,
             ToolbarTool.COPY, ToolbarTool.CUT, ToolbarTool.PASTE,
             ToolbarTool.AUTOCORRECT, ToolbarTool.SELECTION_ACTIONS, ToolbarTool.PHONETIC_ENGLISH,
-            ToolbarTool.LANGUAGE, ToolbarTool.FANCY, ToolbarTool.CUSTOM_LAYOUT, ToolbarTool.INCOGNITO, ToolbarTool.SOUND_HAPTICS,
+            ToolbarTool.LANGUAGE, ToolbarTool.FANCY, ToolbarTool.CUSTOM_LAYOUT, ToolbarTool.INCOGNITO, ToolbarTool.PRIVACY_SHADE,
+            ToolbarTool.SOUND_HAPTICS,
             ToolbarTool.THEMES, ToolbarTool.POWER_SAVING, ToolbarTool.SETTINGS, ToolbarTool.STATISTICS,
         ),
     )
     add(
         R.string.tools_group_utilities_title to listOf(
             ToolbarTool.FLASHLIGHT, ToolbarTool.SCREENSHOT, ToolbarTool.COMPASS, ToolbarTool.LEVEL,
-            ToolbarTool.CALENDAR, ToolbarTool.CLOCK, ToolbarTool.WEATHER, ToolbarTool.LOCATION, ToolbarTool.HOME_ASSISTANT,
+            ToolbarTool.CALENDAR, ToolbarTool.CLOCK, ToolbarTool.TIMESTAMP, ToolbarTool.WEATHER, ToolbarTool.LOCATION, ToolbarTool.HOME_ASSISTANT,
             ToolbarTool.MOON_PHASE, ToolbarTool.PLUGINS,
         ),
     )
@@ -737,4 +808,90 @@ internal fun ToolGlyph(tool: ToolbarTool, brush: Brush? = null) {
         modifier = Modifier.size(HeaderGlyphSize),
         brush = brush,
     )
+}
+
+/**
+ * The installed plugins that draw a panel, by id, with their names in the
+ * user's language: the plugins that can be tools. Follows the plugin store, so
+ * one installed or removed on another screen shows here at once. Empty while
+ * plugins are off.
+ */
+@Composable
+internal fun rememberPluginToolNames(): Map<String, String> {
+    val context = LocalContext.current
+    val store = remember(context) { PluginStore.get(context) }
+    val revision by store.revision.collectAsStateWithLifecycle()
+    return remember(revision) {
+        if (!store.subsystemEnabled()) emptyMap() else store.panelPlugins().associate { it.id to it.displayName }
+    }
+}
+
+/** A toolbox entry's name in Settings: a built-in tool's title, its plugin's name, or its custom button's. */
+@Composable
+internal fun toolKeyTitle(tool: ToolKey, pluginNames: Map<String, String>): String = when (tool) {
+    is ToolKey.Builtin -> stringResource(toolTitle(tool.tool))
+    is ToolKey.Plugin -> pluginNames[tool.pluginId] ?: tool.pluginId
+    is ToolKey.Custom -> {
+        val context = LocalContext.current
+        val buttons = com.wasimaster.wmkeyboard.ime.ui.CustomButtonFaces.buttons
+        remember(buttons, tool.id, context) { com.wasimaster.wmkeyboard.ime.ui.customToolName(context, buttons, tool.id) }
+    }
+}
+
+/**
+ * The plugins that can be tools, each with its own icon, where it is (pinned,
+ * in the toolbox, or panel only) and a switch that puts it in the toolbox or
+ * takes it out of every list. A tap opens the plugin's page, which says more.
+ * Nothing while there are none.
+ */
+@Composable
+private fun PluginToolsGroup(
+    repository: SettingsRepository,
+    settings: LiveSettings,
+    onOpenRoute: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val store = remember(context) { PluginStore.get(context) }
+    val revision by store.revision.collectAsStateWithLifecycle()
+    val plugins = remember(revision) { if (store.subsystemEnabled()) store.panelPlugins() else emptyList() }
+    if (plugins.isEmpty()) return
+    val scope = rememberCoroutineScope()
+    val lists = settings.watch { Triple(it.toolbarTools, it.toolboxOrder, it.toolbox.folders) }
+    val secondRow = settings.watch { it.toolbarBehavior.secondRowTools }
+    SettingsGroup(
+        stringResource(R.string.tools_plugins_group_title),
+        info = stringResource(R.string.tools_plugins_group_info),
+    ) {
+        for (plugin in plugins) {
+            item(key = "plugin:${plugin.id}") {
+                val place = pluginToolPlaceIn(lists.first, lists.second, lists.third, plugin.id, secondRow)
+                WmRow(
+                    title = plugin.displayName,
+                    subtitle = stringResource(
+                        when (place) {
+                            PluginToolPlace.NONE -> R.string.plugins_tile_none
+                            PluginToolPlace.TOOLBAR -> R.string.plugins_tile_toolbar
+                            PluginToolPlace.TOOLBOX -> R.string.plugins_tile_toolbox
+                            PluginToolPlace.SECOND_ROW -> R.string.plugins_tile_second_row
+                        },
+                    ),
+                    leading = { PluginIcon(plugin, tint = plugin.toolColor ?: MaterialTheme.colorScheme.onSurfaceVariant) },
+                    trailing = {
+                        Switch(
+                            checked = place != PluginToolPlace.NONE,
+                            onCheckedChange = { on ->
+                                scope.launch {
+                                    repository.setPluginToolPlace(
+                                        plugin.id,
+                                        if (on) PluginToolPlace.TOOLBOX else PluginToolPlace.NONE,
+                                    )
+                                }
+                            },
+                        )
+                    },
+                    onClick = { onOpenRoute(pluginRoute(plugin.id)) },
+                )
+            }
+        }
+    }
 }

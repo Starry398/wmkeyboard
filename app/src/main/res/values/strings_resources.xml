@@ -4,6 +4,18 @@
     <!-- The Resources screen (#1163), opened from About beside Storage. -->
     <string name="about_resources_title">Resources</string>
     <string name="about_resources_subtitle">Memory, processor time and loaded models, and unload what you don\'t need</string>
+    <!-- About › Debug info: the keyboard's report on the field in front, for bug reports. -->
+    <string name="about_debug_info_title">Debug info</string>
+    <string name="about_debug_info_subtitle">What the field in front asked the keyboard for, to paste into a bug report</string>
+    <string name="search_kw_debug_info">editorinfo input type ime options troubleshoot diagnose</string>
+    <string name="debug_info_from_keyboard">From the keyboard</string>
+    <string name="debug_info_from_app">From the app</string>
+    <string name="debug_info_info">The Debug info action reads what the app you were typing in declared about its text field: the kind of field, the Enter key it wants, its options, the app\'s package and the field\'s hint. It adds the keyboard\'s own state, the screen and memory. It never reads the text in the field. The report stays in memory until you copy it, and is gone when the keyboard restarts.</string>
+    <!-- %1$s: how long ago, such as "2 minutes ago" -->
+    <string name="debug_info_taken_at">Taken in the field you were typing in, %1$s.</string>
+    <string name="debug_info_how">To describe a text field, open it, then run Debug info from the keyboard. Bind it to a key, a flick or a hold on a toolbar button; the action pickers list it under Other. Until then, this is what the app can tell from here.</string>
+    <string name="debug_info_copy">Copy</string>
+    <string name="debug_info_copied">Debug info copied</string>
     <string name="search_kw_about_resources">memory ram cpu battery process monitor task manager unload model</string>
 
     <string name="resources_memory_group">Memory now</string>
@@ -20,6 +32,23 @@
     <!-- %1$s: the amount native code has allocated right now -->
     <string name="resources_memory_native_detail">%1$s allocated by native code right now</string>
 
+    <!-- How busy the keyboard judges the phone to be (Power saving's "When the phone is busy"). -->
+    <string name="resources_load_group">Load</string>
+    <string name="resources_load_info">The keyboard watches how its own frames keep up, how warm the phone is, how short of memory, and how long a word suggestion takes. When they say the phone is struggling, it eases off: moving backgrounds slow down or stop, animations shorten, and work that can wait waits, such as gathering your words for dictation when the keyboard opens. It goes back to normal after a calm spell. Tap the row for the switch.</string>
+    <string name="resources_load_unknown">Not measured yet. Open the keyboard once.</string>
+    <string name="resources_load_off">Adapting to load is off</string>
+    <string name="resources_load_off_subtitle">The keyboard runs as you set it, however busy the phone is</string>
+    <string name="resources_load_normal">Normal: nothing is struggling</string>
+    <string name="resources_load_elevated">Busy: moving backgrounds slowed</string>
+    <string name="resources_load_heavy">Heavy: effects off, waiting work put off</string>
+    <string name="resources_load_class_low">A low-end phone</string>
+    <string name="resources_load_class_mid">A mid-range phone</string>
+    <string name="resources_load_class_high">A high-end phone</string>
+    <string name="resources_load_raised_by">raised by %1$s</string>
+    <string name="resources_load_signal_frames">dropped frames</string>
+    <string name="resources_load_signal_thermal">heat</string>
+    <string name="resources_load_signal_memory">low memory</string>
+    <string name="resources_load_signal_suggestions">slow suggestions</string>
     <string name="resources_cpu_group">Processor time</string>
     <string name="resources_cpu_info">Processor time is the closest thing to battery use that Android lets an app measure for itself. It is counted per thread, and threads are grouped by their names, so a model that runs on threads it named shows up under Models. Time on threads that have already ended counts only in the total.</string>
     <!-- %1$s: processor time, such as "2 min 10 s"; %2$s: how long the keyboard has been running -->

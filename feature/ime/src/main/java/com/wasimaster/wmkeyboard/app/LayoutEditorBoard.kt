@@ -93,7 +93,11 @@ fun editorBoardView(
     val letters = if (layer == LayoutLayer.LETTERS) grid else spec.compile(LayoutLayer.LETTERS)
     val layouts = LayoutSet(
         letters = letters,
-        symbols = if (layer == LayoutLayer.SYMBOLS) grid else spec.compile(LayoutLayer.SYMBOLS),
+        symbols = if (layer == LayoutLayer.SYMBOLS) {
+            grid
+        } else {
+            spec.compile(LayoutLayer.SYMBOLS, settings.layoutBehavior.symbolsPage)
+        },
         symbolsShifted = if (layer == LayoutLayer.SYMBOLS_SHIFTED) grid else spec.compile(LayoutLayer.SYMBOLS_SHIFTED),
         fn = grid.takeIf { layer == LayoutLayer.FN },
         secondaries = if (spec.secondary) mapOf(spec.id to grid) else emptyMap(),
@@ -148,7 +152,8 @@ fun editorKeySlot(key: Key, enterSlot: String): String? {
         KeyAction.InputMethodPicker, is KeyAction.SwitchInputMethod -> IconSlots.KEY_INPUT_METHOD_PICKER
         KeyAction.Emoji -> IconSlots.KEY_EMOJI
         KeyAction.Toolbox -> IconSlots.CHROME_TOOLBOX.takeIf { key.label.isBlank() }
-        is KeyAction.Tool -> IconSlots.forTool(action.tool).takeIf { key.label.isBlank() }
+        is KeyAction.Tool -> (action.custom?.let(com.wasimaster.wmkeyboard.ime.ui::customToolSlot) ?: IconSlots.forTool(action.tool))
+            .takeIf { key.label.isBlank() }
         is KeyAction.SendKey -> arrowKeySlot(action.keyCode)
             ?.takeIf { key.label.isBlank() || key.label in ArrowGlyphs }
         else -> null

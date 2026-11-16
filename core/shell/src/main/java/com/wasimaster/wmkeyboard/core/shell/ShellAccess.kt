@@ -18,6 +18,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import rikka.shizuku.Shizuku
+import rikka.sui.Sui
 import java.io.File
 
 /** One shell command's result: [code] is the exit status, -1 on timeout. */
@@ -62,9 +63,36 @@ object ShellAccess {
     private val service = MutableStateFlow<IShellService?>(null)
     private val bindLock = Mutex()
     private var listening = false
+    private var suChecked = false
 
-    /** Starts listening for Shizuku's binder. Cheap and idempotent; call from any onCreate. */
-    fun init() {
+    /** What [requestShizuku] could do. */
+    enum class Request {
+        /** Shizuku's prompt is up, or the grant was already there. */
+        ASKED,
+
+        /** Shizuku is not running or too old to ask. */
+        UNAVAILABLE,
+
+        /**
+         * The keyboard was denied with "don't ask again": Shizuku shows no
+         * prompt any more, so the tap looked dead. Only Shizuku's own app
+         * list can allow it now.
+         */
+        DENIED_FOR_GOOD,
+    }
+
+    /**
+     * Starts listening for Shizuku's binder. Cheap and idempotent; call from
+     * any onCreate. With [context], Sui is asked for its binder too: Sui (the
+     * Magisk/KernelSU module) hands it only to an app that calls
+     * `Sui.init` with its own package, so without it a rooted phone running
+     * Sui read as "Shizuku not running" for ever.
+     */
+    fun init(context: Context? = null) {
+        if (context != null && !suChecked) {
+            suChecked = true
+            runCatching { Sui.init(context.packageName) }
+        }
         if (listening) return
         listening = true
         runCatching {
@@ -89,15 +117,15 @@ object ShellAccess {
         runCatching { context.packageManager.getPackageInfo(SHIZUKU_PACKAGE, 0) }.isSuccess
 
     /** Opens Shizuku's grant prompt; [shizukuGranted] flips when the user answers. */
-    fun requestShizuku(): Boolean = runCatching {
-        if (!shizukuRunning() || Shizuku.isPreV11()) return false
-        if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-            refresh()
-        } else {
-            Shizuku.requestPermission(REQUEST_CODE)
+    fun requestShizuku(): Request = runCatching {
+        if (!shizukuRunning() || Shizuku.isPreV11()) return Request.UNAVAILABLE
+        when {
+            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED -> refresh()
+            Shizuku.shouldShowRequestPermissionRationale() -> return Request.DENIED_FOR_GOOD
+            else -> Shizuku.requestPermission(REQUEST_CODE)
         }
-        true
-    }.getOrDefault(false)
+        Request.ASKED
+    }.getOrDefault(Request.UNAVAILABLE)
 
     /** Whether an `su` binary is on the usual paths. Says nothing about whether it will grant. */
     val suPresent: Boolean by lazy {
@@ -115,15 +143,30 @@ object ShellAccess {
 
     val available: Boolean get() = kind() != ShellKind.NONE
 
-    /** Runs [command] as the shell (or root); null when no door is open or it failed to start. */
+    /** Whether root may stand in when Shizuku is granted but its service will not come up. */
+    private val rootBackup: Boolean get() = rootAllowed && suPresent
+
+    /**
+     * Runs [command] as the shell (or root); null when no door is open or it
+     * failed to start.
+     *
+     * Shizuku goes first, but when its user service never binds (seen with
+     * Shizuku forks such as Shizuku-next on a KernelSU phone) and the user
+     * has turned **Use root** on, the command goes through `su` instead of
+     * failing: before, root was never tried while Shizuku said "allowed", so
+     * every grant came back refused on a phone that had both.
+     */
     suspend fun exec(context: Context, command: String): ShellResult? = withContext(Dispatchers.IO) {
         when (kind()) {
             ShellKind.SHIZUKU -> runCatching { parse(userService(context)?.exec(command)) }.getOrNull()
-            ShellKind.ROOT -> withTimeoutOrNull(ROOT_TIMEOUT_MS) {
-                runCatching { parse(ShellUserService.runCommand(listOf("su", "-c", command))) }.getOrNull()
-            }
+                ?: if (rootBackup) execRoot(command) else null
+            ShellKind.ROOT -> execRoot(command)
             ShellKind.NONE -> null
         }
+    }
+
+    private suspend fun execRoot(command: String): ShellResult? = withTimeoutOrNull(ROOT_TIMEOUT_MS) {
+        runCatching { parse(ShellUserService.runCommand(listOf("su", "-c", command))) }.getOrNull()
     }
 
     /**
@@ -141,21 +184,23 @@ object ShellAccess {
                             android.os.ParcelFileDescriptor.AutoCloseInputStream(pfd).use { readCapped(it, maxBytes) }
                         }
                     }.getOrNull()
-                }
-                ShellKind.ROOT -> withTimeoutOrNull(ROOT_TIMEOUT_MS) {
-                    runCatching {
-                        val process = ProcessBuilder(listOf("su", "-c", command))
-                            .redirectError(ProcessBuilder.Redirect.to(java.io.File("/dev/null"))).start()
-                        try {
-                            process.inputStream.use { readCapped(it, maxBytes) }
-                        } finally {
-                            process.destroy()
-                        }
-                    }.getOrNull()
-                }
+                } ?: if (rootBackup && service.value == null) execRootBytes(command, maxBytes) else null
+                ShellKind.ROOT -> execRootBytes(command, maxBytes)
                 ShellKind.NONE -> null
             }
         }
+
+    private suspend fun execRootBytes(command: String, maxBytes: Int): ByteArray? = withTimeoutOrNull(ROOT_TIMEOUT_MS) {
+        runCatching {
+            val process = ProcessBuilder(listOf("su", "-c", command))
+                .redirectError(ProcessBuilder.Redirect.to(java.io.File("/dev/null"))).start()
+            try {
+                process.inputStream.use { readCapped(it, maxBytes) }
+            } finally {
+                process.destroy()
+            }
+        }.getOrNull()
+    }
 
     private fun readCapped(input: java.io.InputStream, maxBytes: Int): ByteArray? {
         val out = java.io.ByteArrayOutputStream()

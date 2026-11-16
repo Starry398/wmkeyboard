@@ -50,7 +50,7 @@ Everything below lives under the app's private storage. No other app can read th
 
 A few things worth knowing about that table:
 
-- **Clipboard entries aren't always full copies.** A copied file, folder or video is stored as a reference to the app that owns it, not as duplicated bytes. Only copied images actually land in `clipboard/images/`. Copying a multi-gigabyte video doesn't multiply it.
+- **Clipboard entries aren't always full copies.** A copied file, folder or video is stored as a reference to the app that owns it, not as duplicated bytes. Only copied images actually land in `clipboard/images/`. Copying a multi-gigabyte video doesn't multiply it. A sensitive clip hidden under [Hide it and delete it quickly](/tools/clipboard/#passwords-are-handled-deliberately) is never written to `clipboard/history.json` unless you pin it; it stays in the keyboard's memory until its timer runs out. The whole `clipboard/` folder is also left out of [Android's own backup](/privacy/backup/#androids-own-backup).
 - **AI history is the only row there that's off by default.** Nothing is written until you turn it on. Even then, nothing is written from a password field or in [incognito](/privacy/incognito/), and turning the setting back off deletes the file rather than hiding it. There's a **Delete all history** button on the screen itself too.
 - **The photos behind your stickers stay on the phone.** `stickers/.originals/` holds the picture each sticker was made from, plus the crop, the erased parts and the border, so the [sticker editor](/emoji/stickers/#the-sticker-editor) can reopen the edit later. Exporting a pack, backing settings up and Android's own backup all skip that folder and carry the finished stickers only. <SettingsPath path="About / Storage / Sticker packs" /> shows how much space it uses and lets you delete it on its own.
 - **Downloaded dictionaries are a different folder from imported ones.** A wordlist you download from the [dictionaries catalog](/languages/dictionaries/) goes in `dict/`. A plain-text list you import yourself lives in a separate `dictionaries/` folder, treated as configuration rather than a download. Both are covered on that page.
@@ -103,7 +103,7 @@ Turning on Android's own backup is a separate opt-in, off by default, and covere
 
 ## Options
 
-<SettingsPath path="Privacy / Learning on this device" />
+<SettingsPath path="Typing / Suggestions / Learning on this device" />
 
 - **Learn from typing** (default **on**). Personalizes suggestions from what you type. Turn it off and no new words or pairs are recorded, though existing ones stay until you clear them.
 - **Add words to the system dictionary** (default **off**). Also writes learned words to Android's own system personal dictionary (System Settings → Languages & input → Dictionary), so other keyboards and the platform spell checker see them too. This is the one setting on this screen that writes data *outside* the app.
@@ -111,7 +111,7 @@ Turning on Android's own backup is a separate opt-in, off by default, and covere
 - **Expand Android dictionary shortcuts** (default **on**). Reads the shortcut column of that same system dictionary. A shortcut you've defined there, like "omw" for "on my way", offers the full phrase as a suggestion when you type the shortcut.
 - **Incognito mode** and **Follow private browsing** live in the same group and pause learning and clipboard capture entirely. See [Incognito & secure fields](/privacy/incognito/) for how those work.
 
-<SettingsPath path="Privacy / Android backup / Back up with Android" />
+<SettingsPath path="Data / Backup & restore / Android backup / Back up with Android" />
 
 - **Back up with Android** (default **off**). Covered in [Backup & restore](/privacy/backup/).
 

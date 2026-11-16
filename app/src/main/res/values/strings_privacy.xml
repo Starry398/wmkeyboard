@@ -75,6 +75,10 @@
     <!-- ================================================================== -->
 
     <string name="privacy_learning_group_title">Learning on this device</string>
+    <string name="privacy_incognito_group_title">Incognito</string>
+    <string name="privacy_secure_window_title">Hide the keyboard from screenshots</string>
+    <string name="privacy_secure_window_subtitle">In password fields and while incognito</string>
+    <string name="privacy_secure_window_info">In a password field, and whenever incognito is on, the keyboard asks Android to keep it out of screenshots, screen recordings, screen sharing and the recent apps preview: those show black where the keyboard is. The app you are typing in decides for itself whether its own window is hidden. Turn this off if you need to record the keyboard in those fields.</string>
 
     <string name="privacy_learn_typing_title">Learn from typing</string>
     <string name="privacy_learn_typing_subtitle">The keyboard adjusts the suggestions to your typing. Nothing leaves your device</string>
@@ -128,6 +132,9 @@
     <string name="privacy_qualcomm_licence_dialog_body">To run AI on the NPU, the keyboard needs Qualcomm\'s QNN runtime for your phone\'s chip (about <xliff:g id="size" example="29 MB">%1$s</xliff:g>). The keyboard downloads it from Qualcomm\'s own package on Maven Central, so Qualcomm gives you these files under its AI Stack License, not WM Keyboard. The licence says that you must be 18 or older and that you accept its terms.</string>
     <string name="privacy_qualcomm_licence_accept">Accept and download</string>
     <string name="privacy_qualcomm_licence_view">View licence</string>
+    <string name="privacy_download_mirror_title">GitHub mirror</string>
+    <string name="privacy_download_mirror_hint">Where GitHub can\'t be reached, a GitHub proxy address, such as https://proxy.example/. Each GitHub download tries it first, then GitHub. Files with a published checksum are still checked. Empty: straight from GitHub.</string>
+    <string name="privacy_download_mirror_invalid">Not used: start the address with https://, and write {url} once at most</string>
     <string name="privacy_verify_checksums_title">Verify downloaded files</string>
     <string name="privacy_verify_checksums_subtitle">Check every download and import against its published checksum</string>
     <string name="privacy_verify_checksums_off_subtitle">Off: the keyboard uses files that fail their checksum. Turn this back on when you can.</string>
@@ -333,6 +340,8 @@
     <string name="privacy_permissions_screen_content_subtitle">Let the floating AI button read the screen when you press it</string>
     <string name="privacy_permissions_system_buttons_title">Accessibility service for system buttons</string>
     <string name="privacy_permissions_system_buttons_subtitle">Let the Screenshot tool and the floating button press Android\'s system buttons</string>
+    <string name="privacy_permissions_do_not_disturb_title">Do Not Disturb access</string>
+    <string name="privacy_permissions_do_not_disturb_subtitle">Let the floating button\'s Ringer mode action put the phone on silent</string>
     <string name="privacy_permissions_split_screen_title">Accessibility service for split screen</string>
     <string name="privacy_permissions_split_screen_subtitle">Let the app launcher press Android\'s split screen switch</string>
 

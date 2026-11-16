@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import com.wasimaster.wmkeyboard.core.ui.DisabledReason
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Visibility
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.VisibilityOff
 import androidx.compose.foundation.text.KeyboardOptions
@@ -245,13 +246,13 @@ private sealed interface PendingImport {
  * restored backup from a build with a different one, still has to put the thumb
  * somewhere sensible instead of snapping to the first stop.
  */
-private fun intervalSliderIndex(hours: Int): Int =
+internal fun intervalSliderIndex(hours: Int): Int =
     AutoBackupIntervals.indices.minBy { kotlin.math.abs(AutoBackupIntervals[it] - hours) }
 /** The ladder value under a slider position. */
-private fun intervalAt(index: Float): Int =
+internal fun intervalAt(index: Float): Int =
     AutoBackupIntervals[index.roundToInt().coerceIn(AutoBackupIntervals.indices)]
 /** "Every 6 hours", "Every day", "Every 3 days". */
-private fun backupIntervalLabel(context: Context, hours: Int): String =
+internal fun backupIntervalLabel(context: Context, hours: Int): String =
     if (hours % 24 == 0) {
         context.resources.getQuantityString(
             R.plurals.backup_auto_interval_days,
@@ -757,7 +758,7 @@ private val SECTION_ROWS = listOf(
  * [settingsIncluded] (Settings is among the sections, read by the caller since
  * it decides the rows).
  */
-private fun SettingsGroupScope.sectionRows(
+internal fun SettingsGroupScope.sectionRows(
     settings: LiveSettings,
     sections: (KeyboardSettings) -> Set<ConfigBackup.Section>,
     defaults: Set<String>,
@@ -1059,7 +1060,7 @@ private fun SyncGroupDialog(
  * It says plainly what the file will then hold.
  */
 @Composable
-private fun rememberKeysSwitch(encrypted: Boolean, onSet: (Boolean) -> Unit): (Boolean) -> Unit {
+internal fun rememberKeysSwitch(encrypted: Boolean, onSet: (Boolean) -> Unit): (Boolean) -> Unit {
     var asking by remember { mutableStateOf(false) }
     if (asking) {
         AlertDialog(
@@ -1096,6 +1097,8 @@ internal fun BackupSettings(
     var message by remember { mutableStateOf<String?>(null) }
     // Whether [message] reports a restore that left feature libraries missing.
     var offerLibraries by remember { mutableStateOf(false) }
+    // A restore brings back switches but not the phone's grants (#1225).
+    var offerPermissions by remember { mutableStateOf(false) }
     var confirmImport by remember { mutableStateOf<PendingImport?>(null) }
 
     // Everything downloaded, as a zip of its own (#1045): see [DownloadsBundle].
@@ -1305,7 +1308,16 @@ internal fun BackupSettings(
                 route = "backup/sync",
             ) { onNavigate("backup/sync") }
         }
+        item {
+            NavRow(
+                R.string.restore_screen_title,
+                subtitle = stringResource(R.string.restore_nav_subtitle),
+                route = "backup/history",
+            ) { onNavigate("backup/history") }
+        }
     }
+
+    SharedBoardGroup(repository, settings)
 
     SettingsGroup(
         stringResource(R.string.backup_downloads_title),
@@ -1338,6 +1350,10 @@ internal fun BackupSettings(
                 subtitle = stringResource(R.string.backup_files_export_subtitle),
                 icon = Icons.Outlined.FileUpload,
                 enabled = settings.watch { it.autoBackup.exportSectionSet.isNotEmpty() },
+                disabledReason = DisabledReason(
+                    stringResource(R.string.backup_files_export_disabled),
+                    route = "backup/contents",
+                ),
                 onClick = exportGuarded,
             )
         }
@@ -1369,6 +1385,8 @@ internal fun BackupSettings(
             )
         }
     }
+    // Android's own backup (#134), apart from the keyboard's files above.
+    AndroidBackupGroup(repository, settings)
     Spacer(Modifier.height(16.dp))
 
     foreignUri?.let { uri -> ImportFileDialog(repository, uri) { foreignUri = null } }
@@ -1437,6 +1455,9 @@ internal fun BackupSettings(
                                                 },
                                             ),
                                         )
+                                        append("\n\n")
+                                        append(context.getString(R.string.backup_restore_permissions_note))
+                                        offerPermissions = true
                                         val missing = FeatureLibraryList.missingCount()
                                         if (missing > 0) {
                                             append("\n\n")
@@ -1539,6 +1560,7 @@ internal fun BackupSettings(
         val close = {
             message = null
             offerLibraries = false
+            offerPermissions = false
         }
         AlertDialog(
             onDismissRequest = close,
@@ -1548,17 +1570,69 @@ internal fun BackupSettings(
                     Text(stringResource(CommonR.string.common_ok))
                 }
             },
-            dismissButton = if (offerLibraries) {
+            dismissButton = if (offerLibraries || offerPermissions) {
                 {
-                    TextButton(onClick = {
-                        close()
-                        navigate(FeatureLibraryList.ROUTE)
-                    }) { Text(stringResource(R.string.feature_libraries_title)) }
+                    Row {
+                        if (offerPermissions) {
+                            TextButton(onClick = {
+                                close()
+                                navigate("permissions")
+                            }) { Text(stringResource(R.string.privacy_permissions_title)) }
+                        }
+                        if (offerLibraries) {
+                            TextButton(onClick = {
+                                close()
+                                navigate(FeatureLibraryList.ROUTE)
+                            }) { Text(stringResource(R.string.feature_libraries_title)) }
+                        }
+                    }
                 }
             } else {
                 null
             },
         )
+    }
+}
+
+/**
+ * The shared clipboard board (#1201): a folder on one of the WebDAV places
+ * above, where every device that picks it leaves clips for the others. Here
+ * rather than on the Clipboard screen because it is a choice among these
+ * places; that screen keeps a row at its bottom that points here.
+ */
+@Composable
+private fun SharedBoardGroup(repository: SettingsRepository, settings: LiveSettings) {
+    val scope = rememberCoroutineScope()
+    val boardPlaces = settings.watch { s ->
+        s.autoBackup.locations.filter { it.type == BackupDestination.WEBDAV && it.configured }
+    }
+    val boardPicked = settings.watch { it.clipboard.boardLocation }
+    SettingsGroup(stringResource(R.string.clipboard_board_group), level = SettingLevel.STANDARD) {
+        item {
+            ChoiceSetting(
+                R.string.clipboard_board_title,
+                subtitle = stringResource(
+                    if (boardPlaces.isEmpty()) R.string.clipboard_board_none_subtitle else R.string.clipboard_board_subtitle,
+                ),
+                info = stringResource(R.string.clipboard_board_info),
+                options = listOf("" to stringResource(R.string.clipboard_board_off)) +
+                    boardPlaces.map { place ->
+                        place.id to place.name.ifEmpty { Uri.parse(place.webDavUrl).host ?: place.webDavUrl }
+                    },
+                selected = boardPicked.takeIf { id -> id.isEmpty() || boardPlaces.any { it.id == id } } ?: "",
+                default = SettingsDefaults.clipboard.boardLocation,
+            ) { scope.launch { repository.setClipboardBoardLocation(it) } }
+        }
+        // Every copy onto the board as well (#1201), not only those sent by hand.
+        item(visible = boardPicked.isNotEmpty() && boardPlaces.any { it.id == boardPicked }) {
+            ToggleSetting(
+                R.string.clipboard_board_auto_title,
+                stringResource(R.string.clipboard_board_auto_subtitle),
+                settings.watch { it.clipboard.boardAutoSend },
+                info = stringResource(R.string.clipboard_board_auto_info),
+                default = SettingsDefaults.clipboard.boardAutoSend,
+            ) { scope.launch { repository.setClipboardBoardAutoSend(it) } }
+        }
     }
 }
 
@@ -1594,6 +1668,7 @@ internal fun BackupAutoSettings(repository: SettingsRepository, settings: LiveSe
     }
 
     fun resync() = scope.launch { AutoBackupScheduler.sync(context, repository.settings.first().autoBackup) }
+    val navigate = LocalSettingsNavigate.current
 
     SettingsGroup {
         item {
@@ -1608,6 +1683,13 @@ internal fun BackupAutoSettings(repository: SettingsRepository, settings: LiveSe
                 ),
                 autoOn && configured,
                 enabled = configured,
+                // No location at all is fixed on the Backup page; an unticked
+                // one under Back up to, further down this page.
+                disabledReason = if (locations.isEmpty()) {
+                    DisabledReason(stringResource(R.string.backup_auto_needs_location), route = "backup")
+                } else {
+                    DisabledReason(stringResource(R.string.backup_auto_needs_target))
+                },
                 default = SettingsDefaults.autoBackup.enabled && configured,
             ) { on ->
                 scope.launch {
@@ -1760,6 +1842,7 @@ internal fun BackupAutoSettings(repository: SettingsRepository, settings: LiveSe
                     ),
                     settings.watch { it.autoBackup.frequent.encrypt } && hasPassphrase,
                     enabled = hasPassphrase,
+                    disabledReason = DisabledReason(stringResource(R.string.backup_frequent_encrypt_needs_passphrase)),
                     default = SettingsDefaults.autoBackup.frequent.encrypt,
                 ) { on -> scope.launch { repository.setFrequentBackupEncrypt(on) } }
             }
@@ -1774,14 +1857,20 @@ internal fun BackupAutoSettings(repository: SettingsRepository, settings: LiveSe
         if (locations.isEmpty()) {
             item { WmRow(title = stringResource(R.string.backup_auto_targets_none)) }
         }
+        // Each opens its own page, where it can keep a schedule and contents
+        // of its own instead of this screen's.
         for (location in locations) {
             item {
-                LocationCheckRow(location, location.backup) { on ->
-                    scope.launch {
-                        repository.upsertBackupLocation(location.copy(backup = on))
-                        resync()
-                    }
-                }
+                LocationTargetRow(
+                    location,
+                    onChange = { on ->
+                        scope.launch {
+                            repository.updateBackupLocation(location.id) { it.copy(backup = on) }
+                            resync()
+                        }
+                    },
+                    onOpen = { navigate(backupLocationRoute(location.id)) },
+                )
             }
         }
     }
@@ -1917,6 +2006,7 @@ internal fun BackupSyncSettings(repository: SettingsRepository, settings: LiveSe
                 syncOn && hasActive,
                 info = stringResource(R.string.backup_sync_first_note),
                 enabled = hasActive,
+                disabledReason = DisabledReason(stringResource(R.string.backup_auto_needs_location), route = "backup"),
                 default = SettingsDefaults.autoBackup.sync.enabled,
             ) { on ->
                 val auto = settings.value.autoBackup

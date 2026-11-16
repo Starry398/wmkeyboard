@@ -23,10 +23,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import com.wasimaster.wmkeyboard.core.icons.symbols.automirrored.outlined.VolumeUp
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.ArrowDropDown
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.AutoMode
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Close
@@ -37,12 +40,15 @@ import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.DownloadDone
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.PhoneAndroid
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.SwapHoriz
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.SwapVert
+import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Translate
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -59,7 +65,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -84,12 +92,14 @@ import com.wasimaster.wmkeyboard.core.translate.OfflineTranslation
 import com.wasimaster.wmkeyboard.core.translate.TranslateModuleState
 import com.wasimaster.wmkeyboard.core.ui.ScrollRail
 import com.wasimaster.wmkeyboard.core.ui.rememberScrollRailState
+import com.wasimaster.wmkeyboard.ime.CaretText
 import com.wasimaster.wmkeyboard.ime.FocusRegion
 import com.wasimaster.wmkeyboard.ime.KeyboardUiState
 import com.wasimaster.wmkeyboard.ime.PanelMode
 import com.wasimaster.wmkeyboard.ime.ProviderPicks
 import com.wasimaster.wmkeyboard.ime.R
 import com.wasimaster.wmkeyboard.ime.TranslateUi
+import com.wasimaster.wmkeyboard.ime.lookup.SearchCompletions
 import com.wasimaster.wmkeyboard.core.ui.DisabledReason
 
 /**
@@ -112,6 +122,14 @@ data class TranslateCallbacks(
     val onPaste: () -> Unit = {},
     /** Empties the text box for the next message (#1092). */
     val onClear: () -> Unit = {},
+    /** Translate only when asked (#1226): sends the box's text, once. */
+    val onTranslate: () -> Unit = {},
+    /** Reads the translation aloud in its own language (#1085). */
+    val onSpeak: () -> Unit = {},
+    /** A suggestion under the text box, tapped (#1085): it becomes the text, translated. */
+    val onSuggestion: (String) -> Unit = {},
+    /** A word of the translation, tapped (#1085): the Dictionary looks it up. */
+    val onLookUp: (String) -> Unit = {},
 )
 
 /**
@@ -253,6 +271,7 @@ internal fun TranslateTool(
                         .weight(1f)
                         .heightIn(max = FullBleedHeaderHeight)
                         .padding(start = 8.dp),
+                    callbacks,
                 )
                 TranslateActionRow(
                     state,
@@ -344,6 +363,7 @@ private fun TranslatePanel(
                 Modifier
                     .weight(1f)
                     .fillMaxHeight(),
+                callbacks,
             )
         }
         return
@@ -360,7 +380,7 @@ private fun TranslatePanel(
             )
         },
         languages = { TranslateLanguageRow(state, callbacks, menus) },
-        result = { TranslateResult(state, Modifier.fillMaxSize()) },
+        result = { TranslateResult(state, Modifier.fillMaxSize(), callbacks) },
         actions = {
             TranslateActionRow(
                 state,
@@ -627,9 +647,16 @@ private fun TranslateLanguageRow(
     }
 }
 
-/** The translation, the error in its place, or the offer of the models it needs. */
+/**
+ * The translation, the error in its place, or the offer of the models it
+ * needs. A translation has a speaker at its corner that reads it aloud in its
+ * own language (#1085), and a tap on one of its words looks that word up.
+ * While the box is typed into, the words and idioms it could be heading for
+ * sit over the result ([SearchCompletions]).
+ */
 @Composable
-private fun TranslateResult(state: KeyboardUiState, modifier: Modifier) {
+private fun TranslateResult(state: KeyboardUiState, modifier: Modifier, callbacks: TranslateCallbacks) {
+    val onSpeak = callbacks.onSpeak
     val kb = LocalKbTheme.current
     val translate = state.translate
     val animate = kb.motion.toolResults
@@ -642,14 +669,80 @@ private fun TranslateResult(state: KeyboardUiState, modifier: Modifier) {
         if (offer) {
             TranslateDownloadOffer(translate = translate, modifier = Modifier.fillMaxSize(), animate = animate)
         } else {
-            TranslateText(state, animate, Modifier.fillMaxSize())
+            Column(Modifier.fillMaxSize()) {
+                if (state.mediaSearchActive) TranslateSuggestions(callbacks.onSuggestion)
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    val speakable = translate.translated.isNotEmpty() && translate.error == null
+                    TranslateText(
+                        state,
+                        animate,
+                        Modifier.fillMaxSize().padding(end = if (speakable) TranslateSpeakSize else 0.dp),
+                        onWordTap = callbacks.onLookUp.takeIf { speakable },
+                    )
+                    if (speakable) {
+                        val speak = stringResource(R.string.ime_translate_speak_desc)
+                        IconHint(speak, modifier = Modifier.align(Alignment.TopEnd)) {
+                            Icon(
+                                Icons.AutoMirrored.Outlined.VolumeUp,
+                                contentDescription = speak,
+                                tint = kb.secondaryText,
+                                modifier = Modifier
+                                    .size(TranslateSpeakSize)
+                                    .clip(CircleShape)
+                                    .clickable(onClick = onSpeak)
+                                    .padding(5.dp),
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
+/** The suggestions over the result while the box is typed into (#1085); nothing when there are none. */
+@Composable
+private fun TranslateSuggestions(onPick: (String) -> Unit) {
+    val kb = LocalKbTheme.current
+    val phrases by SearchCompletions.translate.collectAsState()
+    if (phrases.isEmpty()) return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(top = 2.dp, bottom = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        for (phrase in phrases) {
+            Text(
+                phrase,
+                color = kb.chipText,
+                fontSize = 12.sp,
+                maxLines = 1,
+                modifier = Modifier
+                    .clip(kb.chipShape())
+                    .frostGlass(kb, kb.chipShape(), FrostSurface.CHIPS)
+                    .background(kb.chip)
+                    .chipBorder(kb, kb.chipShape())
+                    .clickable { onPick(phrase) }
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+    }
+}
+
+/** The speaker at the translation's corner, padding included. */
+private val TranslateSpeakSize = 28.dp
+
 /** The translation, or the line standing in for it, fading in where it changed. */
 @Composable
-private fun TranslateText(state: KeyboardUiState, animate: Boolean, modifier: Modifier) {
+private fun TranslateText(
+    state: KeyboardUiState,
+    animate: Boolean,
+    modifier: Modifier,
+    /** A word of the translation, tapped; null while there is no translation to tap. */
+    onWordTap: ((String) -> Unit)? = null,
+) {
     val kb = LocalKbTheme.current
     val translate = state.translate
     RevealedText(
@@ -657,11 +750,13 @@ private fun TranslateText(state: KeyboardUiState, animate: Boolean, modifier: Mo
             translate.error != null -> translate.error
             translate.translated.isNotEmpty() -> translate.translated
             translate.translating -> stringResource(R.string.ime_translate_progress)
+            state.settings.translate.manual -> stringResource(R.string.ime_translate_idle_manual)
             else -> stringResource(R.string.ime_translate_idle)
         },
         color = when {
             translate.error != null -> kb.accent
-            translate.translated.isEmpty() -> kb.secondaryText
+            // Out of date (#1226): still there to insert, but not what the box says now.
+            translate.translated.isEmpty() || translate.stale -> kb.secondaryText
             else -> kb.suggestionText
         },
         fontSize = if (state.mediaSearchActive) 14.sp else 16.sp,
@@ -669,6 +764,7 @@ private fun TranslateText(state: KeyboardUiState, animate: Boolean, modifier: Mo
         modifier = modifier
             .padding(vertical = 4.dp)
             .verticalScroll(rememberScrollState()),
+        onWordTap = onWordTap,
     )
 }
 
@@ -688,8 +784,12 @@ private fun RevealedText(
     fontSize: TextUnit,
     animate: Boolean,
     modifier: Modifier,
+    /** The word under a tap, for a text whose words look themselves up (#1085). */
+    onWordTap: ((String) -> Unit)? = null,
 ) {
     var settled by remember { mutableStateOf(text) }
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val wordTap by rememberUpdatedState(onWordTap)
     val keep = remember(text) { if (animate) revealStart(settled, text) else text.length }
     val fade = remember(text) { Animatable(if (keep < text.length) 0f else 1f) }
     LaunchedEffect(text) {
@@ -705,7 +805,23 @@ private fun RevealedText(
             withStyle(SpanStyle(color = color.copy(alpha = color.alpha * p))) { append(text, keep, text.length) }
         }
     }
-    Text(text = shown, color = color, fontSize = fontSize, modifier = modifier)
+    Text(
+        text = shown,
+        color = color,
+        fontSize = fontSize,
+        onTextLayout = { layout = it },
+        modifier = if (onWordTap == null) {
+            modifier
+        } else {
+            modifier.pointerInput(text) {
+                detectTapGestures { position ->
+                    val laid = layout?.takeIf { it.layoutInput.text.text == text } ?: return@detectTapGestures
+                    val span = CaretText.wordSpanAt(text, laid.getOffsetForPosition(position)) ?: return@detectTapGestures
+                    wordTap?.invoke(text.substring(span.first, span.last + 1))
+                }
+            }
+        },
+    )
 }
 
 /**
@@ -745,16 +861,20 @@ private fun TranslateActionRow(
     val translate = state.translate
     // The offline build's offer says where to import; it has nothing to press.
     val offerDownload = translate.offersDownload() && InternetPermission.granted
+    // Translate only when asked (#1226): the button that sends, first in the row.
+    val asks = state.settings.translate.manual && !offerDownload
+    val lead = if (asks) 1 else 0
     PanelFocusTarget(
         panel = PanelMode.TRANSLATE,
         region = FocusRegion.ACTIONS,
-        count = if (offerDownload) 1 else 2,
-        columns = if (offerDownload) 1 else 2,
+        count = if (offerDownload) 1 else 2 + lead,
+        columns = if (offerDownload) 1 else 2 + lead,
         onActivate = { index ->
             when {
                 offerDownload -> callbacks.onDownload()
+                asks && index == 0 -> if (state.mediaQuery.isNotBlank()) callbacks.onTranslate()
                 translate.translated.isEmpty() -> Unit
-                index == 0 -> callbacks.onReplace()
+                index == lead -> callbacks.onReplace()
                 else -> callbacks.onInsert()
             }
         },
@@ -786,18 +906,27 @@ private fun TranslateActionRow(
             ) { callbacks.onDownload() }
         } else {
             val nothing = DisabledReason(stringResource(R.string.ime_disabled_translate_nothing))
+            if (asks) {
+                TranslateAction(
+                    label = stringResource(R.string.ime_translate_now_action),
+                    icon = Icons.Outlined.Translate,
+                    enabled = state.mediaQuery.isNotBlank() && !translate.translating,
+                    modifier = sized.focusRing(focusedAction == 0, kb.chipShape()),
+                    disabledReason = DisabledReason(stringResource(R.string.ime_disabled_translate_empty_box)),
+                ) { callbacks.onTranslate() }
+            }
             TranslateAction(
                 label = stringResource(R.string.ime_translate_replace_action),
                 icon = Icons.Outlined.SwapVert,
                 enabled = translate.translated.isNotEmpty(),
-                modifier = sized.focusRing(focusedAction == 0, kb.chipShape()),
+                modifier = sized.focusRing(focusedAction == lead, kb.chipShape()),
                 disabledReason = nothing,
             ) { callbacks.onReplace() }
             TranslateAction(
                 label = stringResource(R.string.ime_insert_action),
                 icon = null,
                 enabled = translate.translated.isNotEmpty(),
-                modifier = sized.focusRing(focusedAction == 1, kb.chipShape()),
+                modifier = sized.focusRing(focusedAction == lead + 1, kb.chipShape()),
                 disabledReason = nothing,
             ) { callbacks.onInsert() }
         }
@@ -942,11 +1071,17 @@ internal fun arrangeTranslateLanguages(
     keep: (String) -> Boolean,
     downloadedFirst: Boolean,
     shortList: Boolean,
+    /**
+     * Codes to lead the menu, in this order (#1308): the languages last
+     * picked, then the ones the keyboard types in. Only those on [codes].
+     */
+    pinned: List<String> = emptyList(),
 ): List<String> {
     val shown = if (shortList) codes.filter { ready(it) || keep(it) } else codes
-    if (!downloadedFirst) return shown
-    val (top, rest) = shown.partition(ready)
-    return top + rest
+    val ordered = if (downloadedFirst) shown.partition(ready).let { (top, rest) -> top + rest } else shown
+    if (pinned.isEmpty()) return ordered
+    val lead = pinned.mapNotNull { pin -> ordered.firstOrNull { it.equals(pin, ignoreCase = true) } }.distinct()
+    return lead + ordered.filterNot { it in lead }
 }
 
 @Composable
@@ -1002,6 +1137,10 @@ private fun translateMenuRows(
         keep = { code -> code.equals(selected, ignoreCase = true) || code.lowercase() in typed },
         downloadedFirst = showModels && settings.translate.downloadedFirst,
         shortList = shortList,
+        // The few the user goes between, then the languages they type in.
+        pinned = settings.translateRecentLangs + settings.enabledLanguages.mapNotNull {
+            TranslateClient.pickerCode(it.id.replace('_', '-'))
+        },
     )
     val languages = arranged.map { code ->
         val onDevice = supported(code)

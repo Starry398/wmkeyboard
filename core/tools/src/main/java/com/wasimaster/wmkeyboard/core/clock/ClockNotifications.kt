@@ -8,9 +8,12 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import com.wasimaster.wmkeyboard.app.ChannelFeatures
 import com.wasimaster.wmkeyboard.app.MainActivityContract
 import com.wasimaster.wmkeyboard.core.notify.NotificationIds
 import com.wasimaster.wmkeyboard.core.notify.NotificationKind
@@ -47,6 +50,7 @@ object ClockNotifications {
     private const val GROUP_TIMERS = "clock_timers"
     private const val GROUP_STOPWATCH = "clock_stopwatch"
     private const val GROUP_ALARMS = "clock_alarms"
+    private const val GROUP_MISSED = "clock_missed"
 
     /** The ring screen, in `:app`, named as a string like the settings activity. */
     const val RING_ACTIVITY = "com.wasimaster.wmkeyboard.app.clock.ClockRingActivity"
@@ -71,6 +75,64 @@ object ClockNotifications {
                 it !in wanted
         }
             .forEach { WmNotifications.cancel(context, it) }
+        // From what is wanted, not from the shade: a post made a moment ago
+        // need not be listed there yet. A missed alarm stays until swiped
+        // away, so the shade is what says whether one is still there.
+        val missed = active.any { NotificationIds.isMissedAlarm(it) }
+        syncSummary(context, Summary.TIMERS, data.timers.isNotEmpty())
+        syncSummary(context, Summary.STOPWATCH, !data.stopwatch.isReset)
+        syncSummary(context, Summary.ALARMS, wanted.any { NotificationIds.isAlarmNotice(it) })
+        syncSummary(context, Summary.MISSED, missed)
+    }
+
+    /**
+     * The clock's three groups, each with a summary of its own (#970). Android
+     * 16 bundles every notification whose group has no summary into one for
+     * the whole app, which is what One UI 8.5 showed: the timer, the stopwatch
+     * and an alarm under a single icon, where other clock apps keep them
+     * apart. A summary is what a group needs to stand on its own.
+     */
+    private enum class Summary(
+        val group: String,
+        val id: Int,
+        val icon: Int,
+        val title: Int,
+        val tab: String,
+        val channel: NotificationSubChannel?,
+    ) {
+        TIMERS(GROUP_TIMERS, NotificationIds.CLOCK_TIMERS_SUMMARY, R.drawable.core_tools_ic_timer, R.string.core_tools_clock_timer, "timers", null),
+        STOPWATCH(
+            GROUP_STOPWATCH, NotificationIds.CLOCK_STOPWATCH_SUMMARY, R.drawable.core_tools_ic_stopwatch,
+            R.string.core_tools_clock_stopwatch, "stopwatch", NotificationSubChannel.CLOCK_STOPWATCH,
+        ),
+        ALARMS(
+            GROUP_ALARMS, NotificationIds.CLOCK_ALARMS_SUMMARY, R.drawable.core_tools_ic_alarm_on,
+            R.string.core_tools_clock_alarm, "alarms", NotificationSubChannel.CLOCK_ALARMS,
+        ),
+
+        // Missed alarms apart from the ones still to come (#970): a channel,
+        // a group and a status bar icon of their own, as other clock apps do.
+        MISSED(
+            GROUP_MISSED, NotificationIds.CLOCK_MISSED_SUMMARY, R.drawable.core_tools_ic_alarm_off,
+            R.string.core_tools_clock_alarm, "history", NotificationSubChannel.CLOCK_MISSED,
+        ),
+    }
+
+    /** Posts [summary] while its group has [children], and takes it down once it has none. */
+    private fun syncSummary(context: Context, summary: Summary, children: Boolean) {
+        if (!children) {
+            WmNotifications.cancel(context, summary.id)
+            return
+        }
+        WmNotifications.post(context, NotificationKind.CLOCK, summary.id, summary.channel) {
+            setSmallIcon(summary.icon)
+            setGroup(summary.group)
+            setGroupSummary(true)
+            setContentTitle(context.getString(summary.title))
+            setOnlyAlertOnce(true)
+            setSilent(true)
+            setContentIntent(openClock(context, summary.tab))
+        }
     }
 
     /**
@@ -97,7 +159,8 @@ object ClockNotifications {
             val title = alarm.label.ifEmpty { context.getString(R.string.core_tools_clock_alarm) }
             val time = ClockFormats.time(at, zone, hour24)
             WmNotifications.post(context, NotificationKind.CLOCK, id, NotificationSubChannel.CLOCK_ALARMS) {
-                setSmallIcon(R.drawable.core_tools_ic_alarm)
+                // An icon each in the status bar (#970): a snooze, or a ring to come.
+                setSmallIcon(if (snoozed) R.drawable.core_tools_ic_snooze else R.drawable.core_tools_ic_alarm_on)
                 setGroup(GROUP_ALARMS)
                 setContentTitle(title)
                 setContentText(
@@ -124,14 +187,15 @@ object ClockNotifications {
     fun postMissed(context: Context, ring: Ringing) {
         val title = ring.label.ifEmpty { context.getString(R.string.core_tools_clock_alarm) }
         val time = ClockFormats.time(ring.since, java.util.TimeZone.getDefault(), android.text.format.DateFormat.is24HourFormat(context))
-        WmNotifications.post(context, NotificationKind.CLOCK, NotificationIds.forMissedAlarm(ring.ref), NotificationSubChannel.CLOCK_ALARMS) {
-            setSmallIcon(R.drawable.core_tools_ic_alarm)
-            setGroup(GROUP_ALARMS)
+        WmNotifications.post(context, NotificationKind.CLOCK, NotificationIds.forMissedAlarm(ring.ref), NotificationSubChannel.CLOCK_MISSED) {
+            setSmallIcon(R.drawable.core_tools_ic_alarm_off)
+            setGroup(GROUP_MISSED)
             setContentTitle(context.getString(R.string.core_tools_clock_missed_title, title))
             setContentText(context.getString(R.string.core_tools_clock_missed_at, time))
             setAutoCancel(true)
             setContentIntent(openClock(context, "history"))
         }
+        syncSummary(context, Summary.MISSED, children = true)
     }
 
     private fun postTimer(context: Context, t: RunningTimer, id: Int) {
@@ -274,6 +338,37 @@ object ClockNotifications {
         return runCatching { manager.canUseFullScreenIntent() }.getOrDefault(false)
     }
 
+    /**
+     * After an update (#1287): Android can hand the full-screen grant back on
+     * a reinstall or an upgrade (Samsung's One UI does on every one), and the
+     * ring screen then never lights up a locked phone. With an alarm set, a
+     * notice says so, and its tap opens the switch. Taken down once the grant
+     * is back or no alarm is on.
+     */
+    fun checkFullScreenAfterUpdate(context: Context, data: ClockData) {
+        if (!ChannelFeatures.CLOCK_FULL_SCREEN || Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
+        if (canUseFullScreen(context) || data.alarms.none { it.enabled }) {
+            WmNotifications.cancel(context, NotificationIds.CLOCK_FULL_SCREEN_LOST)
+            return
+        }
+        val allow = PendingIntent.getActivity(
+            context, REQUEST_FULL_SCREEN,
+            Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:${context.packageName}"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        WmNotifications.post(context, NotificationKind.CLOCK, NotificationIds.CLOCK_FULL_SCREEN_LOST, NotificationSubChannel.CLOCK_ALARMS) {
+            setSmallIcon(R.drawable.core_tools_ic_alarm)
+            setGroup(GROUP_ALARMS)
+            setContentTitle(context.getString(R.string.core_tools_clock_full_screen_lost_title))
+            setContentText(context.getString(R.string.core_tools_clock_full_screen_lost_text))
+            setStyle(NotificationCompat.BigTextStyle().bigText(context.getString(R.string.core_tools_clock_full_screen_lost_text)))
+            setAutoCancel(true)
+            setContentIntent(allow)
+            addAction(0, context.getString(R.string.core_tools_clock_full_screen_allow), allow)
+        }
+    }
+
     fun ringScreen(context: Context): PendingIntent =
         PendingIntent.getActivity(
             context, REQUEST_RING_SCREEN,
@@ -345,6 +440,7 @@ object ClockNotifications {
     private const val PROGRESS_MAX = 1000
     private const val TIMEOUT_GRACE_MS = 5 * 60_000L
     private const val REQUEST_RING_SCREEN = 10
+    private const val REQUEST_FULL_SCREEN = 11
     private const val REQUEST_OPEN = 20
     private const val REQUEST_ACTION_BASE = 100
 }

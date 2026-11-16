@@ -923,6 +923,7 @@ internal fun providerAccent(type: ProviderType?): Color = when (type?.id) {
     ProviderTypes.BRAVE.id -> Color(0xFFFB542B)
     ProviderTypes.TAVILY.id -> Color(0xFF3B5BDB)
     ProviderTypes.SEARXNG.id -> Color(0xFF3050FF)
+    ProviderTypes.MWMBL.id -> Color(0xFF8A2BE2)
     ProviderTypes.UNSPLASH.id -> Color(0xFF111111)
     ProviderTypes.PEXELS.id -> Color(0xFF05A081)
     ProviderTypes.HOME_ASSISTANT.id -> Color(0xFF18BCF2)
@@ -1172,7 +1173,9 @@ internal fun ProviderEditorSheet(
                 StoredTextField(
                     label = stringResource(R.string.providers_field_path),
                     value = draft.extra[CredentialSpec.PATH].orEmpty(),
-                    supporting = stringResource(R.string.providers_field_path_hint),
+                    supporting = stringResource(
+                        if (ProviderTool.AI in type.serves) R.string.providers_field_path_ai_hint else R.string.providers_field_path_hint,
+                    ),
                     keyboardType = KeyboardType.Uri,
                 ) { path ->
                     edit(draft.copy(extra = if (path.isBlank()) draft.extra - CredentialSpec.PATH else draft.extra + (CredentialSpec.PATH to path)))

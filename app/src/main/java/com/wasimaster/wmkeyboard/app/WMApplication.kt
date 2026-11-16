@@ -47,6 +47,8 @@ open class WMApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Before anything sizes a cache: a 1 GB television box gets smaller ones.
+        com.wasimaster.wmkeyboard.core.perf.DeviceMemory.init(this)
         // The crash screen runs in its own process and must not get a handler:
         // a failure while showing a crash report would launch another crash
         // report, forever. See CrashReportActivity.
@@ -84,9 +86,23 @@ open class WMApplication : Application() {
         // Where a Khipro spec set newer than the bundled one is kept (#909);
         // loaded the first time Khipro types, not here.
         com.wasimaster.wmkeyboard.core.transliteration.KhiproSpecs.attach(this)
+        // Where the jquery.ime methods that ship are read from; each is read
+        // the first time a layout types through it, not here.
+        val appAssets = assets
+        com.wasimaster.wmkeyboard.core.input.imported.BundledInputMethods.assets = { path ->
+            runCatching { appAssets.open(path) }.getOrNull()
+        }
+        // The Varnam symbol tables Malayalam, Tamil, Telugu and Kannada read
+        // their dictionary words through; each is read the first time it is used.
+        com.wasimaster.wmkeyboard.core.transliteration.VarnamSchemes.assets = { path ->
+            runCatching { appAssets.open(path) }.getOrNull()
+        }
         // Lets the keyboard tell whether a screen of this app is up before it
         // recycles the process the two share. One callback registration.
         com.wasimaster.wmkeyboard.core.util.StartedActivities.install(this)
+        // Scans still waiting for the user's Paperless server (#1198): the
+        // upload job does not outlive a reboot. One directory listing.
+        com.wasimaster.wmkeyboard.ime.paperless.PaperlessQueue.resume(this)
         // Interface language packs (the standard GitHub build, Android 11+):
         // loaded once here and added to every screen's resources as it is
         // created, before it inflates a string. A no-op on every other build,
@@ -132,6 +148,9 @@ open class WMApplication : Application() {
             googleHome = com.wasimaster.wmkeyboard.config.BuildConfig.ENABLE_GOOGLE_HOME,
             bergamot = BergamotTranslator.available,
             nllb = NllbTranslator.available,
+            // And the OCR list its engines on the phone.
+            mlKitOcr = com.wasimaster.wmkeyboard.config.BuildConfig.ENABLE_ML_KIT_SCANNERS,
+            tesseract = com.wasimaster.wmkeyboard.core.ocr.TesseractOcr.available,
         )
         // Where the Dictionary tool's offline dictionaries live, for a
         // look-up from the keyboard or the AI tool alike. Only a path: before
@@ -155,17 +174,17 @@ open class WMApplication : Application() {
         // :core:intelligence; :core:voice gets it through these. Nothing runs
         // until a program exported for the NPU is opened.
         com.wasimaster.wmkeyboard.core.voice.executorch.EtNative.qnnPossible = {
-            com.wasimaster.wmkeyboard.core.localllm.NpuSupport.soc != null
+            com.wasimaster.wmkeyboard.core.localllm.NpuSupport.qnnSoc != null
         }
         com.wasimaster.wmkeyboard.core.voice.executorch.EtNative.qnnRuntime = {
-            com.wasimaster.wmkeyboard.core.localllm.NpuSupport.soc?.let {
+            com.wasimaster.wmkeyboard.core.localllm.NpuSupport.qnnSoc?.let {
                 com.wasimaster.wmkeyboard.core.localllm.NpuRuntime.directory(this, it)
             }
         }
         // The same chip picks the NPU builds of Parakeet and Moonshine that
         // sherpa-onnx's QNN library runs.
         com.wasimaster.wmkeyboard.core.voice.executorch.EtNative.qnnSoc = {
-            com.wasimaster.wmkeyboard.core.localllm.NpuSupport.soc
+            com.wasimaster.wmkeyboard.core.localllm.NpuSupport.qnnSoc
         }
         // Sync between devices: keeps its jobs in step with the settings and
         // pushes shortly after a synced setting changes. Here because the

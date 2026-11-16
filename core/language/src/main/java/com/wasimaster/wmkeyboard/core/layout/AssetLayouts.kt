@@ -880,6 +880,7 @@ object AssetLayouts {
     const val AGX_CYRILLIC_ID = "asset_agx_cyrillic"
     const val AK_LETTERS_ID = "asset_ak_letters"
     const val ALT_LETTER_ROW_ID = "asset_alt_letter_row"
+    const val AR_LEGACY_ID = "asset_ar_legacy"
     const val AR_LETTERS_ID = "asset_ar_letters"
     const val AR_LULUA_ID = "asset_ar_lulua"
     const val BA_LETTER_ROW_ID = "asset_ba_letter_row"
@@ -904,6 +905,10 @@ object AssetLayouts {
     const val EN_KASROZ_ID = "asset_en_kasroz"
     /** QWERTY's columns laid end to end on one row, read like Minuum's strip. */
     const val EN_ONE_ROW_ID = "asset_en_one_row"
+    /** QWERTY on a honeycomb ([LayoutSpec.grid] `"hex"`), p moved down to the home row. */
+    const val EN_HEX_QWERTY_ID = "asset_en_hex_qwerty"
+    /** The alphabet in order on an eight-cell honeycomb, for big keys. */
+    const val EN_HEX_ABC_ID = "asset_en_hex_abc"
     const val EN_SHAVIAN_ID = "asset_en_shavian"
     const val EN_SHAVIAN_TWO_LAYER_ID = "asset_en_shavian_two_layer"
     const val ENF_CYRILLIC_ID = "asset_enf_cyrillic"
@@ -991,6 +996,39 @@ object AssetLayouts {
     const val ZGH_LATIN_QWERTZ_ID = "asset_zgh_latin_qwertz"
     const val ZGH_TIFINAGH_ALT_ID = "asset_zgh_tifinagh_alt"
     const val ZGH_TIFINAGH_AZERTY_ID = "asset_zgh_tifinagh_azerty"
+
+    // Four layouts AnySoftKeyboard ships that WM did not (gap K7 of the
+    // 2026-11-13 comparison), laid out from their own specs: Ergo-L from
+    // ergol.org's ergol.toml, Rulemak from rulemak.klc (xkeyboard-config
+    // ru(rulemak)), AdNW and KOY from adnw.de, and Bribri's alphabet.
+    const val FR_ERGOL_ID = "asset_fr_ergol"
+    const val RU_RULEMAK_ID = "asset_ru_rulemak"
+    const val DE_ADNW_ID = "asset_de_adnw"
+    const val DE_KOY_ID = "asset_de_koy"
+    const val BZD_QWERTY_ID = "asset_bzd_qwerty"
+
+    // The grids smc/Indic-Keyboard (Apache-2.0) ships that had no counterpart
+    // here, converted from its LatinIME XML and given this app's shift, delete
+    // and bottom rows (#1340). Its compact and mobile InScript boards, Navees,
+    // KaGaPa, Jhelum, Probhat and the rest already had one. The phonetic-keys
+    // boards put each letter on the QWERTY key that sounds like it; nothing is
+    // transliterated.
+    const val GU_PHONETIC_KEYS_ID = "asset_gu_phonetic_keys"
+    const val PA_PHONETIC_KEYS_ID = "asset_pa_phonetic_keys"
+    const val TE_PHONETIC_KEYS_ID = "asset_te_phonetic_keys"
+    const val TE_APPLE_ID = "asset_te_apple"
+    /** Typed in Telugu itself through its own jquery.ime rule file: క ్ ఇ is కి. */
+    const val TE_KACHATATHAPA_ID = "asset_te_kachatathapa"
+    const val TA_TYPEWRITER_KEYS_ID = "asset_ta_typewriter_keys"
+    const val MR_PHONETIC_KEYS_ID = "asset_mr_phonetic_keys"
+    const val OR_PHONETIC_KEYS_ID = "asset_or_phonetic_keys"
+    const val ML_LALITHA_ID = "asset_ml_lalitha"
+    const val SAT_OLCK_COMPACT_ID = "asset_sat_olck_compact"
+    const val MNW_TALACHAN_ID = "asset_mnw_talachan"
+    const val BHO_KAITHI_PHONETIC_ID = "asset_bho_kaithi_phonetic"
+    const val KS_SHARADA_PHONETIC_ID = "asset_ks_sharada_phonetic"
+    const val SAZ_PHONETIC_ID = "asset_saz_phonetic"
+    const val SYL_SYLOTI_NAGRI_PHONETIC_ID = "asset_syl_syloti_nagri_phonetic"
 
     // One-row boards (QWERTY folded column by column, Minuum style), generated
     // from each language's main grid; see EN_ONE_ROW_ID.

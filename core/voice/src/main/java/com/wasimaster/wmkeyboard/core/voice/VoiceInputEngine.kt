@@ -168,6 +168,7 @@ class VoiceInputEngine(private val context: Context) {
         formatting: Boolean = true,
         bias: VoiceBiasRequest = VoiceBiasRequest.NONE,
         alsoListenFor: List<String> = emptyList(),
+        maskOffensive: Boolean = false,
     ) {
         cancel()
         lastErrorCode = 0
@@ -180,17 +181,25 @@ class VoiceInputEngine(private val context: Context) {
         // Every one of them deaf to this language leaves nothing, and then
         // they are all asked again: the user may have put that right since.
         val routes = all.filterNot { (it to languageTag) in deaf }.ifEmpty { all }
-        listen(Request(languageTag, listener, formatting, bias, alsoListenFor), routes, 0, emptyList())
+        listen(Request(languageTag, listener, formatting, bias, alsoListenFor, maskOffensive), routes, 0, emptyList())
     }
 
-    /** What [start] was asked for, carried from one recognizer to the next. */
+    /**
+     * What [start] was asked for, carried from one recognizer to the next.
+     * [bare] is the second pass [VoiceRoutes.retriesBare] allows: the
+     * language alone, no extras.
+     */
     private class Request(
         val languageTag: String,
         val listener: Listener,
         val formatting: Boolean,
         val bias: VoiceBiasRequest,
         val alsoListenFor: List<String>,
-    )
+        val maskOffensive: Boolean,
+        val bare: Boolean = false,
+    ) {
+        fun bare(): Request = Request(languageTag, listener, false, VoiceBiasRequest.NONE, emptyList(), maskOffensive, bare = true)
+    }
 
     private fun open(route: VoiceRoute): SpeechRecognizer = when (route) {
         VoiceRoute.OnDevice ->
@@ -306,9 +315,16 @@ class VoiceInputEngine(private val context: Context) {
                     return
                 }
                 release(session)
+                val failures = failed + VoiceRoutes.Failure(route, error)
+                // Every one refused to start: once more from the first, with
+                // the language alone, for recognizers that refuse extras.
+                if (neverStarted && !finishing && VoiceRoutes.retriesBare(failures, ask.bare)) {
+                    listen(ask.bare(), routes, 0, failures)
+                    return
+                }
                 // The last of several that could not start: say the most
                 // useful of their reasons.
-                val told = if (neverStarted) VoiceRoutes.toTell(failed + VoiceRoutes.Failure(route, error)).code else error
+                val told = if (neverStarted) VoiceRoutes.toTell(failures).code else error
                 report(listener, told)
             }
 
@@ -344,14 +360,30 @@ class VoiceInputEngine(private val context: Context) {
 
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
-        session.startListening(recognizerIntent(ask.languageTag, ask.formatting, ask.bias, ask.alsoListenFor))
+        session.startListening(
+            if (ask.bare) {
+                bareRecognizerIntent(ask.languageTag)
+            } else {
+                recognizerIntent(ask.languageTag, ask.formatting, ask.bias, ask.alsoListenFor, ask.maskOffensive)
+            },
+        )
     }
+
+    /** The request with nothing but what every recognizer knows: free-form, the language, partials. */
+    private fun bareRecognizerIntent(languageTag: String): Intent =
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        }
 
     private fun recognizerIntent(
         languageTag: String,
         formatting: Boolean = true,
         bias: VoiceBiasRequest = VoiceBiasRequest.NONE,
         alsoListenFor: List<String> = emptyList(),
+        maskOffensive: Boolean = false,
     ): Intent =
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(
@@ -367,6 +399,12 @@ class VoiceInputEngine(private val context: Context) {
                     RecognizerIntent.EXTRA_ENABLE_FORMATTING,
                     RecognizerIntent.FORMATTING_OPTIMIZE_QUALITY,
                 )
+            }
+            // Google's recognizer masks swear words ("f***") unless told not
+            // to; the keyboard's "Mask swear words" setting decides instead.
+            // Android 13 added the extra, and a recognizer may ignore it.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                putExtra(RecognizerIntent.EXTRA_MASK_OFFENSIVE_WORDS, maskOffensive)
             }
             // Words to lean towards (#305). Android 13 added both extras, and
             // "depending on the recognizer implementation" either may be

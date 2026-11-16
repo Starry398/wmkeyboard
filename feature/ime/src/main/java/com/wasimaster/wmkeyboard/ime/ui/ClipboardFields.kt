@@ -19,6 +19,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -55,8 +56,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import com.wasimaster.wmkeyboard.core.selection.ColourCodes
+import com.wasimaster.wmkeyboard.core.tools.CodeSniff
 import com.wasimaster.wmkeyboard.core.icons.symbols.automirrored.outlined.OpenInNew
 import com.wasimaster.wmkeyboard.core.icons.symbols.filled.PushPin
+import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.CloudUpload
+import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.LibraryAdd
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.CheckCircle
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Checklist
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Close
@@ -93,6 +97,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
@@ -150,8 +155,10 @@ import androidx.compose.foundation.shape.CircleShape
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Password
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Phone
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Link
+import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Mail
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Place
 import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.SelectAll
+import com.wasimaster.wmkeyboard.core.icons.symbols.outlined.Share
 import com.wasimaster.wmkeyboard.core.clipboard.ClipItem
 import com.wasimaster.wmkeyboard.core.clipboard.ClipKind
 import com.wasimaster.wmkeyboard.core.clipboard.ClipLinks
@@ -216,8 +223,14 @@ data class ClipboardPanelActions(
     val onClearUnpinned: () -> Unit = {},
     /** A link clip's Open link: the address in the browser (#371). */
     val onOpenLink: (ClipItem) -> Unit = {},
+    /** Compose email on a clip with an address in it: the mail app, writing to it (gap list item 26). */
+    val onComposeEmail: (String) -> Unit = {},
     /** An image clip's View: the picture full screen (#371). */
     val onViewImage: (ClipItem) -> Unit = {},
+    /** "Remind me" for a deadline or a birthday in a pinned clip (#1293): the calendar, filled in. */
+    val onRemind: (com.wasimaster.wmkeyboard.core.notes.assist.NoteReminder) -> Unit = {},
+    /** An image clip's Share: Android's share sheet (#1178). */
+    val onShareImage: (ClipItem) -> Unit = {},
     /** An image clip's Extract text: the OCR panel, reading the picture (#371). */
     val onExtractText: (ClipItem) -> Unit = {},
     /** An image clip's Translate: the camera's confirm step, translating the picture (#807). */
@@ -260,12 +273,18 @@ data class ClipboardPanelActions(
     val onQr: (ClipItem) -> Unit = {},
     /** Paste next (#1178): what the paste keys and the app's Paste give next, the history left as it is. */
     val onPasteNext: (ClipItem) -> Unit = {},
+    /** Collect copies here (#1312): new copies go into this clip until it is pressed again. */
+    val onCollect: (ClipItem) -> Unit = {},
+    /** Send to board (#1201): this clip onto the shared board; null where there is no board. */
+    val onSendToBoard: ((ClipItem) -> Unit)? = null,
     /** A text clip searched for (#914): on Wikipedia when true, else the web search tool. */
     val onSearch: (ClipItem, Boolean) -> Unit = { _, _ -> },
     /** A note's passage the search found (#1104), tapped: typed into the field, as the note has it. */
     val onNotePassage: (NotePassageHit) -> Unit = {},
     /** A note's passage held: the Notes panel, editing the note it is from at the match (#1099). */
     val onNotePassageOpen: (NotePassageHit) -> Unit = {},
+    /** The shared board (#1201): its view's state and actions; empty where there is no board, as in the floating box. */
+    val board: com.wasimaster.wmkeyboard.ime.board.ClipBoardCallbacks = com.wasimaster.wmkeyboard.ime.board.ClipBoardCallbacks(),
 )
 
 /**
@@ -304,12 +323,61 @@ internal enum class ClipFilter {
 /**
  * What two clips' texts are compared by in the duplicates filter (#612): the
  * text in lower case with its runs of spaces and line breaks made one space.
+ * A link is compared by the page it opens (#1312, [sameLinkKey]), so the
+ * same video copied with and without its share tracker counts once.
  */
-internal fun duplicateKey(item: ClipItem): String? =
-    item.text.takeIf { item.kind.isTextual && !item.sensitive && it.isNotBlank() }
-        ?.trim()?.lowercase()?.replace(DuplicateSpace, " ")
+internal fun duplicateKey(item: ClipItem): String? {
+    val text = item.text.takeIf { item.kind.isTextual && !item.sensitive && it.isNotBlank() } ?: return null
+    if (item.kind == ClipKind.LINK) sameLinkKey(text, ClipDuplicateTrackers)?.let { return it }
+    return text.trim().lowercase().replace(DuplicateSpace, " ")
+}
 
 private val DuplicateSpace = Regex("\\s+")
+
+/**
+ * The user's own tracker names (Copy rules, #665), which [duplicateKey] takes
+ * off a link before it compares, as the copy rules do. Set by the clipboard
+ * panel from its settings; a list the panel reads, not state of its own.
+ */
+@Volatile
+internal var ClipDuplicateTrackers: List<String> = emptyList()
+
+/**
+ * The page [text] opens, when it is one link (#1312): its trackers off (the
+ * built-in ones and [extra]), no scheme, the host without `www.`, `m.` or
+ * `mobile.`, no trailing slash, and a YouTube video under one address
+ * whichever way it was shared (`youtu.be/x`, `/shorts/x`, `/watch?v=x&t=9`).
+ * Null for anything that is not a single link.
+ */
+internal fun sameLinkKey(text: String, extra: Collection<String>): String? {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
+    val url = com.wasimaster.wmkeyboard.core.selection.SelectionMacros.stripTrackers(trimmed, extra) ?: trimmed
+    val schemeless = url.substringAfter("://", url)
+    val hostEnd = schemeless.indexOfFirst { it == '/' || it == '?' || it == '#' }.let { if (it < 0) schemeless.length else it }
+    var host = schemeless.substring(0, hostEnd).substringAfterLast('@').lowercase()
+    for (prefix in SameLinkHostPrefixes) host = host.removePrefix(prefix)
+    if (host.isEmpty() || '.' !in host) return null
+    var rest = schemeless.substring(hostEnd)
+    val fragment = rest.substringAfter('#', "").let { if (it.isEmpty()) "" else "#$it" }
+    rest = rest.substringBefore('#')
+    val path = rest.substringBefore('?').trimEnd('/')
+    val query = rest.substringAfter('?', "")
+    youtubeId(host, path, query)?.let { return "link:youtube.com/watch?v=$it" }
+    return "link:$host$path" + (if (query.isEmpty()) "" else "?$query") + fragment
+}
+
+private val SameLinkHostPrefixes = listOf("www.", "m.", "mobile.")
+
+/** The video a YouTube link opens, or null for any other link. */
+private fun youtubeId(host: String, path: String, query: String): String? = when {
+    host == "youtu.be" -> path.removePrefix("/").substringBefore('/').takeIf { it.isNotEmpty() }
+    host != "youtube.com" && host != "music.youtube.com" -> null
+    path.startsWith("/shorts/") || path.startsWith("/live/") || path.startsWith("/embed/") ->
+        path.substringAfter('/', "").substringAfter('/').substringBefore('/').takeIf { it.isNotEmpty() }
+    path == "/watch" -> query.split('&').firstOrNull { it.startsWith("v=") }?.removePrefix("v=")?.takeIf { it.isNotEmpty() }
+    else -> null
+}
 
 /**
  * [items] that share a [duplicateKey] with another, each group together in
@@ -574,12 +642,26 @@ internal class ClipboardPanelSession(
      * under a kind filter notes are not.
      */
     val notePassages: List<NotePassageHit> = emptyList(),
+    /** "Remind me" for the deadlines and birthdays in pinned clips (#1293), with the notes assistant on. */
+    val reminders: List<com.wasimaster.wmkeyboard.core.notes.assist.NoteReminder> = emptyList(),
 ) {
     /** The question is on screen: asked, and there is still something to delete. */
     val confirmingClear: Boolean get() = showClear && clearAsking.value
 
     /** Something in the filter row is set, so the row stays up and the button stays lit. */
     val filtered: Boolean get() = !active.isEmpty || oldest.value
+}
+
+/**
+ * The clipboard's history alone, for the floating box (#1265): the list the
+ * panel's layout puts in its history cell, with its tabs, picking and undo,
+ * and none of the layout's keys. The keyboard's own search does not filter
+ * it; the box shows the whole history.
+ */
+@Composable
+internal fun ClipboardBoxHistory(state: KeyboardUiState, callbacks: ClipboardFieldCallbacks) {
+    val session = rememberClipboardPanelSession(state)
+    ClipboardListField(state, session, callbacks)
 }
 
 @Composable
@@ -736,6 +818,21 @@ internal fun rememberClipboardPanelSession(state: KeyboardUiState): ClipboardPan
     } else {
         allEntities.filter { query.isEmpty() || it.value.contains(query, ignoreCase = true) }
     }
+    // The notes assistant's reminders for pinned clips (#1293): rules only, so no model is needed.
+    val assist = state.settings.notes.assist
+    val reminders = if (assist.on(assist.reminders) && !state.clipboardSearchActive) {
+        remember(state.clipboardItems) {
+            com.wasimaster.wmkeyboard.core.notes.assist.NoteReminders.forTexts(
+                state.clipboardItems
+                    .filter { it.pinned && !it.sensitive && it.kind.isTextual && it.text.isNotBlank() }
+                    .map { it.text to it.timestamp },
+                System.currentTimeMillis(),
+                limit = CLIP_REMINDERS_MAX,
+            )
+        }
+    } else {
+        emptyList()
+    }
     val gridState = rememberLazyStaggeredGridState()
     val searchGridState = rememberLazyStaggeredGridState()
     val tidy = state.settings.clipboard.copyRules.any { it.enabled } || state.settings.clipboard.plainLetters
@@ -753,7 +850,7 @@ internal fun rememberClipboardPanelSession(state: KeyboardUiState): ClipboardPan
     return remember(
         shownItems, entities, showSearch, query, gridState, list, numbers,
         tabbed, pinnedCount, unpinnedCount, showClear, ocr, perClip, entityIcons, confirmPinned,
-        hiddenFragments, regexSearch, tidy, pinsInPlace, allTags, gridItems, folders, inFolder, notePassages, active,
+        hiddenFragments, regexSearch, tidy, pinsInPlace, allTags, gridItems, folders, inFolder, notePassages, active, reminders,
     ) {
         ClipboardPanelSession(
             shownItems, entities, showSearch, query, gridState, list, numbers,
@@ -780,6 +877,7 @@ internal fun rememberClipboardPanelSession(state: KeyboardUiState): ClipboardPan
             folders = folders,
             inFolder = inFolder,
             notePassages = notePassages,
+            reminders = reminders,
         )
     }
 }
@@ -1059,16 +1157,57 @@ private fun ClipboardEntitiesField(
         columns = entities.size.coerceAtLeast(1),
         onActivate = { index -> entities.getOrNull(index)?.let(callbacks.onEntity) },
     )
-    if (entities.isEmpty()) return
-    Box(modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(0.dp))) {
-        ClipEntityStrip(
-            entities = entities,
-            focused = state.focusedIndex(FocusRegion.CHIPS),
-            onPaste = callbacks.onEntity,
-            onHide = { callbacks.actions.onEntityStripHidden(true) },
-        )
+    val reminders = session.reminders
+    if (entities.isEmpty() && reminders.isEmpty()) return
+    Row(modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(0.dp)), verticalAlignment = Alignment.CenterVertically) {
+        if (reminders.isNotEmpty()) {
+            ClipReminderChips(reminders, callbacks.actions.onRemind, Modifier.then(if (entities.isEmpty()) Modifier.weight(1f) else Modifier))
+        }
+        if (entities.isNotEmpty()) {
+            Box(Modifier.weight(1f)) {
+                ClipEntityStrip(
+                    entities = entities,
+                    focused = state.focusedIndex(FocusRegion.CHIPS),
+                    onPaste = callbacks.onEntity,
+                    onHide = { callbacks.actions.onEntityStripHidden(true) },
+                )
+            }
+        }
     }
 }
+
+/**
+ * "Remind me" chips for the deadlines and birthdays in pinned clips (#1293),
+ * ahead of the fragment chips: a tap opens the calendar on the event, filled
+ * in. Solid rather than dashed, since they are not parts to paste.
+ */
+@Composable
+private fun ClipReminderChips(
+    reminders: List<com.wasimaster.wmkeyboard.core.notes.assist.NoteReminder>,
+    onRemind: (com.wasimaster.wmkeyboard.core.notes.assist.NoteReminder) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Row(
+        modifier = modifier.horizontalScroll(rememberScrollState()).padding(start = 8.dp, end = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        for (reminder in reminders) {
+            var flags = android.text.format.DateUtils.FORMAT_SHOW_DATE or android.text.format.DateUtils.FORMAT_ABBREV_MONTH
+            if (!reminder.allDay) flags = flags or android.text.format.DateUtils.FORMAT_SHOW_TIME
+            val whenText = android.text.format.DateUtils.formatDateTime(context, reminder.startMillis, flags)
+            ToolPanelChip(
+                stringResource(R.string.ime_notes_assist_remind_chip, reminder.title.take(CLIP_REMINDER_TITLE), whenText),
+                selected = true,
+            ) { onRemind(reminder) }
+        }
+    }
+}
+
+/** Reminders the clipboard offers at once, and how much of each one's line its chip shows. */
+private const val CLIP_REMINDERS_MAX = 3
+private const val CLIP_REMINDER_TITLE = 28
 
 /**
  * The history, with the Undo bar over its bottom edge after a delete. The bar
@@ -1129,6 +1268,7 @@ private fun ClipboardListField(
         )
     }
     val deleteAsked = session.deleteAsking.value
+    val clipContext = androidx.compose.ui.platform.LocalContext.current
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             when {
@@ -1152,6 +1292,10 @@ private fun ClipboardListField(
                     onDelete = {
                         session.selection.value = null
                         callbacks.actions.onDeleteMany(selection)
+                    },
+                    onShare = {
+                        session.selection.value = null
+                        shareClips(clipContext, selection, state.clipboardItems)
                     },
                     onTidy = if (session.tidy) {
                         {
@@ -1177,6 +1321,12 @@ private fun ClipboardListField(
                         onSelect = { session.tab.value = it },
                     )
                 }
+            }
+            // The way into the shared board (#1201), only once a place is picked for it.
+            if (!reordering && selection == null && !searchPage) {
+                val board = callbacks.actions.board
+                val boardUi by board.state.collectAsState()
+                ClipBoardEntryRow(boardUi, board.onAction)
             }
             if (!reordering && selection == null) {
                 if (session.inFolder) {
@@ -1315,6 +1465,8 @@ private fun ClipSelectionBar(
     onSelectAll: () -> Unit,
     onCombine: () -> Unit,
     onDelete: () -> Unit,
+    /** Hands the picked text clips to another app through the share sheet: the clipboard's export. */
+    onShare: (() -> Unit)? = null,
     /** Runs the copy rules over the picked clips (#612); none without rules. */
     onTidy: (() -> Unit)? = null,
     /** Converts the picked clips between Zawgyi and Unicode; shown while one holds Burmese. */
@@ -1391,6 +1543,22 @@ private fun ClipSelectionBar(
         ) {
             TextButton(onClick = onCombine, enabled = textual >= 2) {
                 Text(stringResource(R.string.ime_clip_combine))
+            }
+        }
+        if (onShare != null) {
+            val share = stringResource(R.string.ime_clip_share_desc)
+            IconHint(
+                share,
+                disabledReason = DisabledReason(stringResource(R.string.ime_disabled_clip_share)).takeIf { textual < 1 },
+            ) {
+                IconButton(onClick = onShare, enabled = textual >= 1, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Outlined.Share,
+                        contentDescription = share,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
         TextButton(onClick = onDelete, enabled = picked.isNotEmpty()) {
@@ -1891,6 +2059,8 @@ private fun ClipboardHistory(
     val gridItems = session.gridItems
     val emptySlots = session.emptySlots
     val clipboard = state.settings.clipboard
+    // Duplicate links are compared with the user's own trackers off too (#1312).
+    ClipDuplicateTrackers = clipboard.extraTrackers
     // Image clips offer Translate while a photo translation server is on (#807).
     val photoTranslate = remember(state.settings) { PhotoTranslate.rows(state.settings).isNotEmpty() }
     val searchTools = remember(state.settings.enabledTools) {
@@ -2332,6 +2502,10 @@ private fun ClipHoldPopup(
     val image = item.kind == ClipKind.IMAGE
     // Not a secret's: the panel never shows one's text, and the browser would.
     val link = item.kind.isTextual && !item.sensitive && ClipLinks.asUrl(item.text) != null
+    // The first address in the clip, the whole clip included (gap list item 26).
+    val email = remember(item.text, item.kind, item.sensitive) {
+        if (item.kind.isTextual && !item.sensitive) ClipEntities.emailIn(item.text) else null
+    }
     // One part is simply that part; more open the picker (#472).
     val extractParts: (() -> Unit)? = when (hold.entities.size) {
         0 -> null
@@ -2350,6 +2524,14 @@ private fun ClipHoldPopup(
     ) {
         { onDismiss(); callbacks.actions.onPasteNext(item) }
     } else null
+    // Collect copies here (#1312): a text clip that is not a secret.
+    val collect: (() -> Unit)? = if (hold.picked == null && textual && !item.sensitive) {
+        { onDismiss(); callbacks.actions.onCollect(item) }
+    } else null
+    // Send to board (#1201): the same clips, while a board is set up.
+    val sendToBoard: (() -> Unit)? = callbacks.actions.onSendToBoard
+        ?.takeIf { hold.picked == null && textual && !item.sensitive && callbacks.actions.board.state.value.configured }
+        ?.let { send -> { onDismiss(); send(item) } }
     // Picking and reordering are for the history as it is drawn; not while a
     // search or a filter has cut it down, or while clips are already picked.
     val onPick: (() -> Unit)? = if (hold.picked == null) {
@@ -2365,6 +2547,8 @@ private fun ClipHoldPopup(
             actions = ClipTextActions(
                 onInfo = { fullText = false },
                 onPasteNext = pasteNext,
+                onCollect = collect,
+                onSendToBoard = sendToBoard,
                 onPick = onPick,
                 onReorder = onReorder,
                 onJump = hold.onJump?.let { jump -> { onDismiss(); jump() } },
@@ -2387,6 +2571,7 @@ private fun ClipHoldPopup(
                 onOpenLink = if (link) {
                     { onDismiss(); callbacks.actions.onOpenLink(item) }
                 } else null,
+                onComposeEmail = email?.let { address -> { onDismiss(); callbacks.actions.onComposeEmail(address) } },
                 onExtractParts = extractParts,
                 onTogglePin = if (hold.holdPin) {
                     { onDismiss(); callbacks.onPin(item) }
@@ -2423,6 +2608,9 @@ private fun ClipHoldPopup(
         onView = if (image) {
             { onDismiss(); callbacks.actions.onViewImage(item) }
         } else null,
+        onShare = if (image) {
+            { onDismiss(); callbacks.actions.onShareImage(item) }
+        } else null,
         onTranslateImage = if (image && hold.photoTranslate) {
             { onDismiss(); callbacks.actions.onTranslateImage(item) }
         } else null,
@@ -2455,6 +2643,10 @@ private class ClipTextActions(
     val onInfo: () -> Unit,
     /** What pastes next, the history left as it is (#1178). */
     val onPasteNext: (() -> Unit)? = null,
+    /** New copies go into this clip (#1312). */
+    val onCollect: (() -> Unit)? = null,
+    /** Onto the shared board (#1201). */
+    val onSendToBoard: (() -> Unit)? = null,
     /** Start picking clips, with this one (#612). */
     val onPick: (() -> Unit)? = null,
     /** The Reorder view (#612). */
@@ -2472,6 +2664,8 @@ private class ClipTextActions(
     val onWikipedia: (() -> Unit)? = null,
     val onEdit: (() -> Unit)? = null,
     val onOpenLink: (() -> Unit)? = null,
+    /** A new email to the first address in the clip (gap list item 26). */
+    val onComposeEmail: (() -> Unit)? = null,
     val onExtractParts: (() -> Unit)? = null,
     val onTogglePin: (() -> Unit)? = null,
     val onDelete: (() -> Unit)? = null,
@@ -2501,6 +2695,11 @@ private fun ClipFullTextPopup(
     val kb = LocalKbTheme.current
     val chunks = remember(item.text) { clipTextChunks(item.text) }
     val length = item.text.length
+    // Code and Markdown open formatted, with a button for the other view:
+    // Markdown's source (coloured), or code as the plain text it is.
+    val shape = remember(item.text, plainLinks) { if (plainLinks) null else CodeSniff.of(item.text) }
+    var formatted by remember(item.id) { mutableStateOf(true) }
+    val renderMarkdown = shape == CodeSniff.Markdown && length <= ClipMarkdownRenderMax
     Popup(
         popupPositionProvider = rememberAboveAnchorPopup(),
         onDismissRequest = onDismiss,
@@ -2518,20 +2717,89 @@ private fun ClipFullTextPopup(
                     .fillMaxWidth()
                     .frostGlass(kb, kb.menuShape(), FrostSurface.MENUS),
             ) {
-                Column(modifier = Modifier.padding(top = 10.dp)) {
-                    Text(
-                        pluralStringResource(R.plurals.ime_clip_character_count, length, length),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = kb.popupText.copy(alpha = 0.6f),
-                        modifier = Modifier.padding(horizontal = 14.dp),
-                    )
+                Column(modifier = Modifier.padding(top = if (shape == null) 10.dp else 4.dp)) {
+                    Row(
+                        modifier = Modifier.padding(start = 14.dp, end = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        val dim = kb.popupText.copy(alpha = 0.6f)
+                        val count = pluralStringResource(R.plurals.ime_clip_character_count, length, length)
+                        val name = shape?.let {
+                            clipShapeName(it, stringResource(R.string.ime_clip_shape_markdown), stringResource(R.string.ime_clip_shape_code))
+                        }
+                        Text(
+                            if (name == null) count else "$name · $count",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = dim,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        // Code with no language to colour and Markdown too long to
+                        // draw have only one view, so no button.
+                        val switchable = when (shape) {
+                            null -> false
+                            CodeSniff.Markdown -> renderMarkdown
+                            is CodeSniff.Code -> true
+                        }
+                        if (switchable) {
+                            TextButton(
+                                onClick = { formatted = !formatted },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                modifier = Modifier.height(34.dp),
+                            ) {
+                                Text(
+                                    stringResource(if (formatted) R.string.ime_clip_show_raw else R.string.ime_clip_show_formatted),
+                                    fontSize = 12.sp,
+                                    color = kb.accent,
+                                )
+                            }
+                        }
+                    }
+                    val dark = kb.popupText.luminance() > 0.5f
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = ClipFullTextMaxHeight),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                     ) {
+                        if (renderMarkdown && formatted) {
+                            // this.item: the lambda's own `item` is the clip.
+                            this.item {
+                                ChatMarkdown(
+                                    item.text,
+                                    ChatMarkdownColors(
+                                        text = kb.popupText,
+                                        dim = kb.popupText.copy(alpha = 0.6f),
+                                        codeBackground = kb.popupText.copy(alpha = 0.08f),
+                                        link = kb.accent,
+                                    ),
+                                    fontSize = 13.sp,
+                                )
+                            }
+                            return@LazyColumn
+                        }
+                        // Markdown's source, coloured; or code, in either view.
+                        val language = when {
+                            shape == CodeSniff.Markdown -> "markdown"
+                            shape is CodeSniff.Code && formatted -> shape.language
+                            else -> null
+                        }
+                        val mono = shape == CodeSniff.Markdown || (shape is CodeSniff.Code && formatted)
+                        if (mono) {
+                            items(chunks) { chunk ->
+                                val shown = remember(chunk, language, dark) { clipCodeText(chunk, language, dark) }
+                                Text(
+                                    shown,
+                                    fontSize = 12.sp,
+                                    lineHeight = 17.sp,
+                                    fontFamily = codeFontFamily(),
+                                    color = kb.popupText,
+                                )
+                            }
+                            return@LazyColumn
+                        }
                         items(chunks) { chunk ->
                             // Links in the accent colour (#472), so an address
                             // stands out of a long clip.
@@ -2586,6 +2854,12 @@ private fun ClipTextActionButton(action: ClipHoldAction, item: ClipItem, actions
         ClipHoldAction.PASTE_NEXT -> actions.onPasteNext?.let {
             ClipTextActionIcon(Icons.Outlined.ContentPaste, stringResource(R.string.ime_clip_paste_next), tint, it)
         }
+        ClipHoldAction.COLLECT -> actions.onCollect?.let {
+            ClipTextActionIcon(Icons.Outlined.LibraryAdd, stringResource(R.string.ime_clip_collect), tint, it)
+        }
+        ClipHoldAction.SEND_TO_BOARD -> actions.onSendToBoard?.let {
+            ClipTextActionIcon(Icons.Outlined.CloudUpload, stringResource(R.string.ime_clip_send_to_board), tint, it)
+        }
         ClipHoldAction.SELECT -> actions.onPick?.let {
             ClipTextActionIcon(Icons.Outlined.Checklist, stringResource(R.string.ime_clip_select), tint, it)
         }
@@ -2615,6 +2889,9 @@ private fun ClipTextActionButton(action: ClipHoldAction, item: ClipItem, actions
         }
         ClipHoldAction.OPEN_LINK -> actions.onOpenLink?.let {
             ClipTextActionIcon(Icons.AutoMirrored.Outlined.OpenInNew, stringResource(R.string.ime_clip_open_link), tint, it)
+        }
+        ClipHoldAction.COMPOSE_EMAIL -> actions.onComposeEmail?.let {
+            ClipTextActionIcon(Icons.Outlined.Mail, stringResource(R.string.ime_clip_compose_email), tint, it)
         }
         ClipHoldAction.EXTRACT -> actions.onExtractParts?.let {
             ClipTextActionIcon(Icons.Outlined.ContentCut, stringResource(R.string.ime_clip_extract_parts), tint, it)
@@ -2723,6 +3000,16 @@ private fun ClipBody(item: ClipItem, maxLines: Int, hold: ClipHold) {
             // anything over 40 characters before reading it, so a long clip
             // costs nothing here.
             val colour = remember(item.text) { ColourCodes.parse(item.text) }
+            // Code in monospace, coloured when its language is known, and
+            // Markdown formatted; not with Keep formatting off, which asks for
+            // every clip as the plain text it is.
+            val shape = remember(item.text, hold.plainLinks) {
+                if (hold.plainLinks || colour != null) null else CodeSniff.of(item.text)
+            }
+            if (shape != null) {
+                ClipFormattedBody(item, shape, maxLines, hold)
+                return
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (colour != null) ClipColourSwatch(colour.argb, Modifier.padding(end = 6.dp))
                 // Cut before layout: a paragraph is measured whole however few lines
@@ -2740,6 +3027,39 @@ private fun ClipBody(item: ClipItem, maxLines: Int, hold: ClipHold) {
             }
         }
     }
+}
+
+/**
+ * A code or Markdown clip's card body: [maxLines] of it, cut before layout
+ * like plain text. Code keeps its lines whole and clips them at the card's
+ * edge rather than wrapping where the language never would.
+ */
+@Composable
+private fun ClipFormattedBody(item: ClipItem, shape: CodeSniff.Shape, maxLines: Int, hold: ClipHold) {
+    val ink = MaterialTheme.colorScheme.onSurface
+    val dark = ink.luminance() > 0.5f
+    val accent = LocalKbTheme.current.accent
+    val text = remember(item.text, maxLines, shape, dark, accent) {
+        val preview = clipPreviewText(item.text, maxLines)
+        when (shape) {
+            CodeSniff.Markdown -> markdownPreview(preview, accent, ink.copy(alpha = 0.6f), ink.copy(alpha = 0.08f), codeFontFamily())
+            is CodeSniff.Code -> clipCodeText(preview, shape.language, dark)
+        }
+    }
+    val code = shape is CodeSniff.Code
+    // One line of code (a JSON blob, a command, a query) wraps, or the card
+    // would show its first few words; more lines keep their shape.
+    val oneLine = remember(item.text) { item.text.trim().indexOf('\n') < 0 }
+    Text(
+        text = text,
+        maxLines = maxLines,
+        overflow = if (code && !oneLine) TextOverflow.Clip else TextOverflow.Ellipsis,
+        softWrap = !code || oneLine,
+        fontSize = if (code) 12.sp else 13.sp,
+        fontFamily = if (code) codeFontFamily() else null,
+        lineHeight = hold.lineHeight,
+        color = ink,
+    )
 }
 
 /**
@@ -3017,6 +3337,7 @@ private fun ClipEntityIcons(entities: List<ClipEntity>, callbacks: ClipboardFiel
 internal fun clipEntityIcon(kind: ClipEntityKind): ImageVector = when (kind) {
     ClipEntityKind.OTP -> Icons.Outlined.Password
     ClipEntityKind.PHONE -> Icons.Outlined.Phone
+    ClipEntityKind.EMAIL -> Icons.Outlined.Mail
     ClipEntityKind.URL -> Icons.Outlined.Link
     ClipEntityKind.PLACE -> Icons.Outlined.Place
 }
@@ -3049,7 +3370,7 @@ private fun ClipExtractPopup(entities: List<ClipEntity>, onPick: (ClipEntity) ->
             ) {
                 // Links first, then numbers, then codes: the order the request
                 // names them in, and the order they are looked at.
-                val sections = listOf(ClipEntityKind.URL, ClipEntityKind.PLACE, ClipEntityKind.PHONE, ClipEntityKind.OTP)
+                val sections = listOf(ClipEntityKind.URL, ClipEntityKind.EMAIL, ClipEntityKind.PLACE, ClipEntityKind.PHONE, ClipEntityKind.OTP)
                     .mapNotNull { kind -> entities.filter { it.kind == kind }.takeIf { it.isNotEmpty() }?.let { kind to it } }
                 for ((kind, ofKind) in sections) {
                     item(key = "header-${kind.name}") {
@@ -3096,6 +3417,7 @@ private val ClipEntityKind.sectionRes: Int
     get() = when (this) {
         ClipEntityKind.URL -> R.string.ime_clip_extract_links
         ClipEntityKind.PHONE -> R.string.ime_clip_extract_phones
+        ClipEntityKind.EMAIL -> R.string.ime_clip_extract_emails
         ClipEntityKind.OTP -> R.string.ime_clip_extract_codes
         ClipEntityKind.PLACE -> R.string.ime_clip_extract_places
     }
@@ -4217,5 +4539,26 @@ private fun ClipCombineBox(
                 )
             }
         }
+    }
+}
+
+/**
+ * The picked text clips, in the order they were picked, one after another
+ * with a blank line between, handed to the share sheet: how a batch of clips
+ * leaves the keyboard for a file, a note app or a chat. Clips marked
+ * sensitive (passwords, codes) stay out, as they do from every other export.
+ */
+private fun shareClips(context: android.content.Context, picked: List<Long>, items: List<ClipItem>) {
+    val byId = items.associateBy { it.id }
+    val text = picked.mapNotNull { id -> byId[id]?.takeIf { it.kind.isTextual && !it.sensitive }?.text }
+        .joinToString("\n\n")
+    if (text.isEmpty()) return
+    val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+        .setType("text/plain")
+        .putExtra(android.content.Intent.EXTRA_TEXT, text)
+    runCatching {
+        context.startActivity(
+            android.content.Intent.createChooser(send, null).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
     }
 }

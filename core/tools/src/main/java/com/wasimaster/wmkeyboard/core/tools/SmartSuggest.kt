@@ -36,6 +36,8 @@ sealed interface ToolPrefill {
         val end: Long,
         val allDay: Boolean,
         val zoneId: String,
+        /** Repeats every year: a birthday the notes assistant found (#1293). */
+        val yearly: Boolean = false,
     ) : ToolPrefill
 
     /** A term the dictionary or Wikipedia panel looks up as it opens. */
@@ -54,6 +56,9 @@ sealed interface ToolPrefill {
      */
     data class Translate(val text: String, val target: String?, val textLength: Int, val hintLength: Int) : ToolPrefill
 
+    /** An app the app chip opens (#656), by package and launcher activity. */
+    data class OpenApp(val packageName: String, val activityName: String) : ToolPrefill
+
     /** A sentence the Home Assistant panel sends to Assist as it opens. */
     data class Assist(val sentence: String) : ToolPrefill
 
@@ -68,6 +73,13 @@ sealed interface ToolPrefill {
      * the service reads it to start the dialer or the messaging app.
      */
     data class Contact(val name: String, val number: String) : ToolPrefill
+
+    /**
+     * "@weather dhaka": the plugin whose manifest claimed the keyword opens,
+     * and hears [query] through its `@plugin.keyword` callback. [name] is the
+     * plugin's, for the chip's face.
+     */
+    data class Plugin(val id: String, val name: String, val keyword: String, val query: String) : ToolPrefill
 
     /**
      * Text the repeat chip found written [count] times already, with
@@ -100,10 +112,11 @@ object SmartSuggest {
      * with a call face and a message button, and so is [REPEAT] (the same
      * text typed several times over), which opens the Text repeat tool.
      */
-    enum class Kind { CALC, CURRENCY, UNIT, NUMBER, DATE, WEATHER, TOOL, LOOKUP, INTENT, VOCAB, CONTACT, REPEAT, SEND_LINK }
+    enum class Kind { CALC, CURRENCY, UNIT, NUMBER, DATE, WEATHER, TOOL, LOOKUP, INTENT, VOCAB, CONTACT, REPEAT, SEND_LINK, SEARCH, APP }
 
     /** The kinds that only claim the space their label needs. */
-    val narrowKinds: Set<Kind> = setOf(Kind.TOOL, Kind.LOOKUP, Kind.INTENT, Kind.VOCAB, Kind.CONTACT, Kind.REPEAT, Kind.SEND_LINK)
+    val narrowKinds: Set<Kind> =
+        setOf(Kind.TOOL, Kind.LOOKUP, Kind.INTENT, Kind.VOCAB, Kind.CONTACT, Kind.REPEAT, Kind.SEND_LINK, Kind.SEARCH, Kind.APP)
 
     /**
      * A switch under Smart chips, as far as the tools behind it go. The
@@ -246,6 +259,11 @@ object SmartSuggest {
         val compoundUnits: Boolean = true,
         val enabledTools: Collection<ToolbarTool> = emptyList(),
         val keywordOverrides: String = "",
+        /**
+         * The writing systems the user's languages type, which decide which of
+         * a tool's default keywords are live. See [KeywordScripts].
+         */
+        val keywordScripts: KeywordScripts = KeywordScripts.ALL,
         /** Tools whose keywords must match the typed capitals exactly. */
         val caseSensitiveKeywords: String = "",
         // ---- contextual chips ----
@@ -304,6 +322,8 @@ object SmartSuggest {
         /** Offer to receive a Send share link typed or pasted into the field (#729). */
         val sendLinkChips: Boolean = false,
         val contacts: ContactPhones? = null,
+        /** The installed apps by name, for the chip that opens one (#656); null while that is off. */
+        val apps: AppNames? = null,
         // ---- repeated text ----
         /** "no no no" → the Text repeat tool, opened on that text. */
         val repeatChips: Boolean = true,
@@ -311,6 +331,11 @@ object SmartSuggest {
         val repeatAfter: Int = TextRepeat.DEFAULT_REPEAT_AFTER,
         /** Units (lowercase) already offered in this field, so each gets one chip. */
         val repeatRetired: Set<String> = emptySet(),
+        // ---- search shortcuts ----
+        /** "@gif cats" → a GIF search for "cats" (#1242); empty while the switch is off. */
+        val searchTriggers: List<SearchTrigger> = emptyList(),
+        /** Plugin keywords, without the @, to the plugin's id and name; empty while the switch is off. */
+        val pluginKeywords: Map<String, Pair<String, String>> = emptyMap(),
     )
 
     /** Characters of context the scanners look back over. */
@@ -338,11 +363,14 @@ object SmartSuggest {
         if (text.isEmpty()) return null
         // A share link is recognised anywhere in the window, not only at its tail.
         if (ctx.sendLinkChips) detectSendLink(text)?.let { return it }
+        // A search shortcut is asked for by name, so it outranks every guess below.
+        if (ctx.searchTriggers.isNotEmpty()) detectSearch(text, ctx)?.let { return it }
+        if (ctx.pluginKeywords.isNotEmpty()) detectPluginKeyword(text, ctx)?.let { return it }
         val tail = text.takeLast(LOOKBEHIND)
         if (ctx.currencyEnabled) detectCurrency(tail, ctx)?.let { return it }
         if (ctx.unitsEnabled) detectUnit(tail, ctx)?.let { return it }
         if (ctx.calcEnabled) detectCalcPhrase(tail, ctx)?.let { return it }
-        if (ctx.calcEnabled) detectCalc(tail, ctx)?.let { return it }
+        if (ctx.calcEnabled) detectCalc(tail, ctx, text)?.let { return it }
         if (ctx.numberChips) detectNumber(tail, ctx)?.let { return it }
         if (ctx.dateChips) detectDate(tail, ctx)?.let { return it }
         if (ctx.weatherChips) detectWeather(tail, ctx)?.let { return it }
@@ -358,12 +386,71 @@ object SmartSuggest {
         ctx.contacts?.let { contacts ->
             detectContact(tail, contacts, truncated)?.let { return it }
         }
+        ctx.apps?.let { apps ->
+            detectApp(tail, apps, truncated)?.let { return it }
+        }
         // Last: a nudge is advice, and every explicit trigger above outranks it.
         if (ctx.vocabChips) detectVocab(tail, ctx)?.let { return it }
         return null
     }
 
     private fun toolOn(tool: ToolbarTool, ctx: Context): Boolean = tool in ctx.enabledTools
+
+    /**
+     * A search shortcut at the end of the text (#1242; see [SearchTriggers]).
+     * The chip takes the shortcut and its words out of the field as it opens
+     * the tool on them. A contact shortcut raises the contact chip instead,
+     * for the first saved name that starts with the words.
+     */
+    private fun detectPluginKeyword(text: String, ctx: Context): SmartHit? {
+        // The same rules as a search shortcut: "@weather" starts a word and a
+        // space comes before the words. The target is a stand-in; only the
+        // prefix is read back.
+        val triggers = ctx.pluginKeywords.keys.map { SearchTrigger("@$it", SearchTarget.WEB) }
+        val found = SearchTriggers.match(text, triggers) ?: return null
+        val keyword = found.trigger.prefix.removePrefix("@")
+        val (id, name) = ctx.pluginKeywords[keyword] ?: return null
+        return SmartHit(
+            kind = Kind.SEARCH,
+            query = found.query,
+            result = null,
+            insert = null,
+            replaceSpan = found.span,
+            tool = ToolbarTool.PLUGINS,
+            prefill = ToolPrefill.Plugin(id, name, keyword, found.query),
+        )
+    }
+
+    private fun detectSearch(text: String, ctx: Context): SmartHit? {
+        val found = SearchTriggers.match(text, ctx.searchTriggers) ?: return null
+        val target = found.trigger.target
+        if (target == SearchTarget.CONTACTS) {
+            val contact = ctx.contacts?.startingWith(found.query) ?: return null
+            return SmartHit(
+                kind = Kind.CONTACT,
+                query = contact.name,
+                result = contact.number,
+                insert = null,
+                replaceSpan = 0,
+                tool = ToolbarTool.SELECTION_ACTIONS,
+                prefill = ToolPrefill.Contact(contact.name, contact.number),
+            )
+        }
+        val tool = target.tool?.takeIf { toolOn(it, ctx) } ?: return null
+        val prefill = when (target) {
+            SearchTarget.GIF, SearchTarget.STICKER -> ToolPrefill.Gif(found.query)
+            else -> ToolPrefill.Lookup(found.query)
+        }
+        return SmartHit(
+            kind = Kind.SEARCH,
+            query = found.query,
+            result = null,
+            insert = null,
+            replaceSpan = found.span,
+            tool = tool,
+            prefill = prefill,
+        )
+    }
 
     /**
      * A Send share link (#729): opens the Send files tool on receiving it. The
@@ -1143,14 +1230,36 @@ object SmartSuggest {
      * genuine expression is still preferred, and a second sum on the same line
      * is found instead of being shadowed by the first one's result.
      */
-    private fun detectCalc(tail: String, ctx: Context): SmartHit? {
+    private fun detectCalc(tail: String, ctx: Context, text: String = tail): SmartHit? {
+        // [tail] is the end of [text]; the link check reads [text] so it can
+        // still see a scheme the 48-character window has cut off.
+        val offset = text.length - tail.length
         var from = 0
         while (from <= tail.length) {
             val match = CALC_TAIL.find(tail, from) ?: return null
-            calcHit(match, ctx)?.let { return it }
+            if (!insideLink(text, offset + match.range.first)) calcHit(match, ctx)?.let { return it }
             from = match.range.first + 1
         }
         return null
+    }
+
+    /**
+     * What, earlier in the same word, says the digits belong to a link or a
+     * path: a scheme, "www.", a domain followed by its path or query, or a
+     * letter before a slash. "nature.com/articles/d41586-026-03638-3" ends in
+     * a run the sum scanner reads as "026-03638-3", which is part of an
+     * address and not a subtraction.
+     */
+    private val LINK_PREFIX = Regex(
+        """://|^www\.|\p{L}[\p{L}\d-]*\.\p{L}{2,}[/:?#]|\p{L}[^/\s]*/""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** True when the word holding [start] in [text] reads as a link before it. */
+    private fun insideLink(text: String, start: Int): Boolean {
+        var wordStart = start
+        while (wordStart > 0 && !text[wordStart - 1].isWhitespace()) wordStart--
+        return wordStart < start && LINK_PREFIX.containsMatchIn(text.substring(wordStart, start))
     }
 
     private fun calcHit(match: MatchResult, ctx: Context): SmartHit? {
@@ -1242,7 +1351,9 @@ object SmartSuggest {
      * offers nothing.
      */
     private fun detectNumber(tail: String, ctx: Context): SmartHit? {
-        val glyphs = ctx.numberDigits
+        // Read char by char, so a system outside the BMP (Warang Citi) is left
+        // out: its digits are not offered back, ASCII ones still are.
+        val glyphs = ctx.numberDigits?.takeIf { it.length == 10 }
         fun digitsLeftOf(index: Int): Int {
             var i = index
             while (i > 0 && digitValue(tail[i - 1], glyphs) >= 0) i--
@@ -1760,7 +1871,7 @@ object SmartSuggest {
         val exact = decodeCaseSensitive(ctx.caseSensitiveKeywords)
         return ToolbarTool.entries.firstOrNull { candidate ->
             candidate in ctx.enabledTools &&
-                matchesKeyword(word, overrides[candidate] ?: defaultKeywords[candidate].orEmpty(), candidate in exact)
+                matchesKeyword(word, overrides[candidate] ?: defaultKeywordsFor(candidate, ctx.keywordScripts), candidate in exact)
         }
     }
 
@@ -1800,7 +1911,7 @@ object SmartSuggest {
         if (!run.last().writtenWithoutSpaces()) return null
         val overrides = decodeKeywords(ctx.keywordOverrides)
         return ToolbarTool.entries.filter { it in ctx.enabledTools }
-            .flatMap { tool -> (overrides[tool] ?: defaultKeywords[tool].orEmpty()).map { tool to it } }
+            .flatMap { tool -> (overrides[tool] ?: defaultKeywordsFor(tool, ctx.keywordScripts)).map { tool to it } }
             .filter { (_, keyword) ->
                 keyword.length >= 2 && run.endsWith(keyword) && keyword.all { it.writtenWithoutSpaces() }
             }
@@ -1910,6 +2021,40 @@ object SmartSuggest {
                 // the keyboard calls or texts a number.
                 tool = ToolbarTool.SELECTION_ACTIONS,
                 prefill = ToolPrefill.Contact(contact.name, contact.number),
+            )
+        }
+        return null
+    }
+
+    /**
+     * An installed app's name just typed: the chip offers to open it (#656).
+     * The longest run of trailing words that names an app wins ("google
+     * maps", not "maps"), with one trailing space allowed, as for a contact.
+     * The text is never touched.
+     */
+    private fun detectApp(tail: String, apps: AppNames, truncated: Boolean): SmartHit? {
+        if (apps.isEmpty) return null
+        val body = if (tail.endsWith(' ')) tail.dropLast(1) else tail
+        if (body.isEmpty() || body.last().isWhitespace()) return null
+        val tokens = body.split(' ', '\t', '\n')
+        val words = ArrayList<String>()
+        for (index in tokens.indices.reversed()) {
+            val token = tokens[index]
+            if (truncated && index == 0) break
+            if (token.isEmpty() || token.any { it.isWhitespace() }) break
+            words.add(0, token)
+            if (words.size == AppNames.MAX_WORDS) break
+        }
+        for (n in words.size downTo 1) {
+            val app = apps.match(words.takeLast(n).joinToString(" ")) ?: continue
+            return SmartHit(
+                kind = Kind.APP,
+                query = app.label,
+                result = null,
+                insert = null,
+                replaceSpan = 0,
+                tool = ToolbarTool.APP_LAUNCHER,
+                prefill = ToolPrefill.OpenApp(app.packageName, app.activityName),
             )
         }
         return null
@@ -2050,12 +2195,56 @@ object SmartSuggest {
         // Not "send" alone: it is the commonest verb in a chat. The compound forms are meant.
         ToolbarTool.SEND_FILES to listOf("sendfile", "sendfiles", "fileshare", "wetransfer", "发送文件", "傳送檔案", "ファイル送信", "파일전송"),
         ToolbarTool.KDE_CONNECT to listOf("kdeconnect", "kde"),
+        ToolbarTool.FILES to listOf("files", "filemanager", "文件管理", "檔案管理", "ファイル管理", "파일관리"),
         ToolbarTool.APP_LAUNCHER to listOf("apps", "launch", "应用列表", "應用程式", "アプリ", "앱목록"),
         ToolbarTool.TEXT_REPEAT to listOf("repeat", "重复文本", "重複文字", "繰り返し", "반복"),
     )
 
-    fun keywordsFor(tool: ToolbarTool, overrides: String): List<String> =
-        decodeKeywords(overrides)[tool] ?: defaultKeywords[tool].orEmpty()
+    /**
+     * The CJK writing systems the user can type, and so which of
+     * [defaultKeywords] apply to them.
+     *
+     * Every tool ships its words in Chinese, Japanese and Korean beside the
+     * English ones, but someone typing English and Bengali can never type
+     * 翻译, and seeing it in a tool's keyword list reads as noise. A default
+     * keyword written in one of these scripts counts only when one of the
+     * user's languages writes it: Hangul for Korean, kana for Japanese, and a
+     * Han-only word for Chinese, Cantonese or Japanese, which all write Han.
+     * Everything else (the English words) always counts.
+     *
+     * Only defaults are filtered. Words the user typed in are theirs, and a
+     * language enabled later brings its defaults back with it.
+     */
+    data class KeywordScripts(
+        val han: Boolean = false,
+        val kana: Boolean = false,
+        val hangul: Boolean = false,
+    ) {
+        fun admits(keyword: String): Boolean = when {
+            keyword.any { it.isHangul() } -> hangul
+            keyword.any { it in '\u3040'..'\u30FF' } -> kana
+            keyword.any { it in '\u3400'..'\u9FFF' || it in '\uF900'..'\uFAFF' } -> han
+            else -> true
+        }
+
+        private fun Char.isHangul(): Boolean =
+            this in '\uAC00'..'\uD7AF' || this in '\u1100'..'\u11FF' || this in '\u3130'..'\u318F'
+
+        companion object {
+            /** Every script, for callers with no language list to go on. */
+            val ALL = KeywordScripts(han = true, kana = true, hangul = true)
+        }
+    }
+
+    /** [tool]'s shipped keywords the user's [scripts] can type. */
+    fun defaultKeywordsFor(tool: ToolbarTool, scripts: KeywordScripts): List<String> =
+        defaultKeywords[tool].orEmpty().filter(scripts::admits)
+
+    fun keywordsFor(
+        tool: ToolbarTool,
+        overrides: String,
+        scripts: KeywordScripts = KeywordScripts.ALL,
+    ): List<String> = decodeKeywords(overrides)[tool] ?: defaultKeywordsFor(tool, scripts)
 
     /**
      * Overrides encode as "TOOL=a,b;TOOL=c". A tool with an empty list is
@@ -2082,13 +2271,24 @@ object SmartSuggest {
     fun encodeKeywords(map: Map<ToolbarTool, List<String>>): String =
         map.entries.joinToString(";") { (tool, words) -> "${tool.name}=${words.joinToString(",")}" }
 
-    /** Replaces one tool's keywords inside an encoded override string. */
-    fun withKeywords(encoded: String, tool: ToolbarTool, words: List<String>): String {
+    /**
+     * Replaces one tool's keywords inside an encoded override string.
+     *
+     * A list equal to the defaults [scripts] admits is stored as no override
+     * at all, so a language enabled later still adds its words to the tool.
+     */
+    fun withKeywords(
+        encoded: String,
+        tool: ToolbarTool,
+        words: List<String>,
+        scripts: KeywordScripts = KeywordScripts.ALL,
+    ): String {
         val map = decodeKeywords(encoded).toMutableMap()
         val cleaned = words.map { it.trim() }
             .filter { it.length >= 2 && it.all(Char::isLetter) }
             .distinct()
-        if (cleaned == defaultKeywords[tool].orEmpty()) map.remove(tool) else map[tool] = cleaned
+        val defaults = defaultKeywords[tool].orEmpty()
+        if (cleaned == defaults || cleaned == defaults.filter(scripts::admits)) map.remove(tool) else map[tool] = cleaned
         return encodeKeywords(map)
     }
 
