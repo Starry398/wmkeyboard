@@ -1,0 +1,34 @@
+name: Sync fork
+
+# The MCP GitHub server has no merge-upstream call, so the merge happens
+# here instead: fetch wasi-master's main, merge it into this fork, push back.
+# Manual only. A merge commit pushed by GITHUB_TOKEN does not start other
+# workflows, which is what we want: no rebuild from a sync.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Merge upstream main
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Merge and push
+        run: |
+          set -euo pipefail
+          git config user.name "Starry398"
+          git config user.email "149395382+Starry398@users.noreply.github.com"
+          git remote add upstream https://github.com/wasi-master/wmkeyboard.git
+          git fetch upstream main --no-tags
+          echo "fork before: $(git rev-parse --short HEAD)"
+          echo "upstream:    $(git rev-parse --short upstream/main)"
+          git merge --no-edit upstream/main
+          echo "after merge: $(git rev-parse --short HEAD)"
+          git push origin HEAD:main
