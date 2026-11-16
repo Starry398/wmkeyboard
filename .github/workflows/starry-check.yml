@@ -1,0 +1,38 @@
+name: Patch check
+
+on:
+  push:
+    paths:
+      - 'starry/patch/**'
+      - '.github/workflows/starry-check.yml'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  apply:
+    name: Patch applies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Apply every patch, dry run
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(starry/patch/*.patch)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No patches in starry/patch"; exit 0
+          fi
+          for p in "${files[@]}"; do
+            echo "::group::$p"
+            if git apply --check -v "$p"; then
+              echo "OK: git apply --check"
+            elif patch -p1 --dry-run --fuzz=3 < "$p"; then
+              echo "OK: patch -p1 --dry-run --fuzz=3"
+            else
+              echo "::error file=$p::the patch does not apply"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
