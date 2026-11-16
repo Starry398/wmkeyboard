@@ -56,16 +56,22 @@ jobs:
       - name: Assemble
         run: ./gradlew assembleEnDebug -Pandroid.injected.build.abi=arm64-v8a --stacktrace
 
-      # The exact output directory depends on the flavour and the injected abi,
-      # which has changed between AGP versions; glob it rather than name it.
+      # AGP 9 does not put packageEnDebug's output under build/outputs, so search
+      # the whole module. On a miss, print the tree: guessing the path again
+      # costs a full round trip.
       - name: Find the apk
         run: |
-          find app/build/outputs -name '*.apk' -printf '%p %s bytes\n'
+          find app/build -name '*.apk' -printf '%p %s bytes\n' | tee /tmp/apks.txt
+          if [ ! -s /tmp/apks.txt ]; then
+            echo '--- no apk found; app/build layout ---'
+            find app/build -maxdepth 5 -type d | head -60
+            exit 1
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
           name: wmkb-arm64-debug
-          path: app/build/outputs/**/*.apk
+          path: app/build/**/*.apk
           if-no-files-found: error
           retention-days: 14
