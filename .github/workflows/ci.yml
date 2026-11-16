@@ -1,9 +1,11 @@
 name: CI
 
+# Fork: push and pull_request were removed here. Every push to main used to
+# start six jobs (unit tests, three flavours built, dex limits, licences,
+# evals, docs) for forty-five minutes each, none of which this fork needs while
+# a patch is being tried out. Run it by hand from the Actions tab when the
+# upstream checks are actually wanted.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
