@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
-"""Apply the starry changes to a fresh checkout, by anchor.
+"""Apply the starry changes to a fresh checkout.
 
-GitHub's code search does not index WMKeyboardService.kt (65k lines), so a
-unified diff cannot be checked from the phone that writes it: the first attempt
-missed the comment block above fitImeWindowHeight and git apply refused the
-hunk. Anchoring on a short unique line avoids that.
+Upstream main has not compiled since 2026-11-11 (every CI run is red), so this
+script also carries the two repairs that make it build at all. Everything here
+runs on the runner's checkout and never touches the repository.
 
-Three edits, applied in order:
-
-1. WMKeyboardService.kt - the floating-window fix (#1347 / #1297).
-2. app/src/main/res - drop the translated values-* dirs except en and zh.
-
-   Upstream's machine translations carry several unnumbered %s placeholders
-   ("Multiple substitutions specified in non-positional format"), which AAPT2
-   rejects inside :app:mergeEnDebugResources, so main cannot build at all.
-   localeFilters does not help: it is applied at link time, after the merge
-   that fails. Removing the directories before Gradle runs is the only lever;
-   it happens on the runner's checkout and never touches the repository.
+1. WMKeyboardService.kt - the floating-window fix (#1347 / #1297), anchored on
+   the function signature because GitHub's code search does not index a 65k
+   line file and a hunk cannot be verified from a phone.
+2. app/src/main/res - drop the translated values-* dirs except en and zh, then
+   drop the zh entries whose text carries several unnumbered %s placeholders.
+   AAPT2 rejects those in :app:mergeEnDebugResources; deleting the entry falls
+   back to the English text, which is correct, where deleting the whole locale
+   would have cost every other string.
+3. LayoutEditorBoard.kt - `ime.ui::customToolSlot` is a callable reference on a
+   package, which Kotlin rejects ("Expression expected, but package name
+   found"). Turned into a lambda.
 
 Usage:
     apply.py            apply
     apply.py --check    report what would happen, change nothing
-
-Exits non-zero when an anchor is missing, duplicated or already replaced, so CI
-fails loudly instead of shipping a build that silently lacks the changes.
 """
 
 import re
@@ -40,6 +36,16 @@ MARK = "dockWindowBeforeHide"
 RES = Path("app/src/main/res")
 KEEP_LANGS = {"en", "zh"}
 LANG_DIR = re.compile(r"^values-([a-z]{2,3})(?:-r([A-Z]{2}))?$")
+STRING_ENTRY = re.compile(r'<string name="([^"]+)"[^>]*>.*?</string>[ \t]*\n?', re.S)
+UNNUMBERED = re.compile(r"%(?!\d+\$)(?=[a-zA-Z])")
+
+EDITOR = Path(
+    "feature/ime/src/main/java/com/wasimaster/wmkeyboard/app/LayoutEditorBoard.kt"
+)
+EDITOR_BAD = "action.custom?.let(com.wasimaster.wmkeyboard.ime.ui::customToolSlot)"
+EDITOR_GOOD = (
+    "action.custom?.let { com.wasimaster.wmkeyboard.ime.ui.customToolSlot(it) }"
+)
 
 BLOCK = '''    /**
      * #1347: a floating app on HarmonyOS is laid out against the IME window's
@@ -96,17 +102,14 @@ def apply_service(check):
         return 0
 
     if src.count("override fun hideWindow"):
-        return fail(
-            "service: hideWindow is already overridden here; the fix would define "
-            "it twice. Re-anchor on that override instead."
-        )
+        return fail("service: hideWindow is already overridden here")
 
     hits = src.count(ANCHOR)
     if hits != 1:
         return fail(f"service: anchor found {hits} time(s), expected exactly 1")
 
     if check:
-        print("service: anchor ok (1 hit), nothing written")
+        print("service: anchor ok (1 hit)")
         return 0
 
     SERVICE.write_text(src.replace(ANCHOR, BLOCK + ANCHOR, 1), encoding="utf-8")
@@ -114,26 +117,36 @@ def apply_service(check):
     return 0
 
 
-def drop_locales(check):
+def locale_dirs():
     if not RES.is_dir():
-        return fail(f"missing dir: {RES}")
-
-    targets = []
+        return []
+    out = []
     for entry in sorted(RES.iterdir()):
         if not entry.is_dir():
             continue
         match = LANG_DIR.match(entry.name)
-        if not match:
-            continue
-        if match.group(1) in KEEP_LANGS:
-            continue
-        targets.append(entry)
+        if match and match.group(1) in KEEP_LANGS:
+            out.append(entry)
+    return out
+
+
+def drop_other_locales(check):
+    if not RES.is_dir():
+        return fail(f"missing dir: {RES}")
+
+    targets = [
+        entry
+        for entry in sorted(RES.iterdir())
+        if entry.is_dir()
+        and LANG_DIR.match(entry.name)
+        and LANG_DIR.match(entry.name).group(1) not in KEEP_LANGS
+    ]
 
     if not targets:
         print("locales: nothing to drop")
         return 0
 
-    names = ", ".join(p.name for p in targets[:6])
+    names = ", ".join(p.name for p in targets[:5])
     if check:
         print(f"locales: would drop {len(targets)} dirs ({names}, ...)")
         return 0
@@ -144,11 +157,76 @@ def drop_locales(check):
     return 0
 
 
+def drop_bad_strings(check):
+    total = 0
+    kept = []
+    for folder in locale_dirs():
+        strings = folder / "strings.xml"
+        if not strings.is_file():
+            continue
+
+        text = strings.read_text(encoding="utf-8")
+        removed = []
+
+        def replace(match):
+            if len(UNNUMBERED.findall(match.group(0))) >= 2:
+                removed.append(match.group(1))
+                return ""
+            return match.group(0)
+
+        updated = STRING_ENTRY.sub(replace, text)
+
+        if not removed:
+            continue
+
+        total += len(removed)
+        kept.append(f"{folder.name}: {len(removed)}")
+
+        if not check:
+            strings.write_text(updated, encoding="utf-8")
+
+    if not total:
+        print("strings: nothing to drop")
+        return 0
+
+    joined = ", ".join(kept)
+    if check:
+        print(f"strings: would drop {total} entries ({joined})")
+        return 0
+
+    print(f"strings: dropped {total} entries ({joined})")
+    return 0
+
+
+def fix_editor(check):
+    if not EDITOR.is_file():
+        return fail(f"missing file: {EDITOR}")
+
+    src = EDITOR.read_text(encoding="utf-8")
+
+    if EDITOR_GOOD in src:
+        print("editor: already fixed")
+        return 0
+
+    if EDITOR_BAD not in src:
+        return fail("editor: the package-qualified callable reference is not here")
+
+    if check:
+        print("editor: package-qualified reference found, would rewrite it")
+        return 0
+
+    EDITOR.write_text(src.replace(EDITOR_BAD, EDITOR_GOOD, 1), encoding="utf-8")
+    print("editor: fixed")
+    return 0
+
+
 def main():
     check = "--check" in sys.argv
     rc = 0
     rc |= apply_service(check)
-    rc |= drop_locales(check)
+    rc |= drop_other_locales(check)
+    rc |= drop_bad_strings(check)
+    rc |= fix_editor(check)
     return rc
 
 
