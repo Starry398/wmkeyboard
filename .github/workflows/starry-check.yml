@@ -20,15 +20,15 @@ jobs:
         run: |
           f=feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/WMKeyboardService.kt
           echo "service lines: $(wc -l < "$f")"
-          grep -n "private fun fitImeWindowHeight\|fun hideWindow\|fun showWindow\|fullHeightWindow" "$f" | head -20 || true
-          echo "gradle lines:  $(wc -l < app/build.gradle.kts)"
-          grep -n "defaultConfig\|resourceConfigurations\|localeFilters" app/build.gradle.kts | head -20 || true
+          grep -n "private fun fitImeWindowHeight\|fun hideWindow\|fun showWindow" "$f" | head -20 || true
+          echo "res dirs: $(find app/src/main/res -maxdepth 1 -type d -name 'values-*' | wc -l)"
 
-      - name: Verify both anchors
+      - name: Verify the anchors
         run: python3 starry/patch/apply.py --check
 
-      - name: Apply and show the diff
+      - name: Apply and show what changed
         run: |
           python3 starry/patch/apply.py
-          git --no-pager diff --stat
-          git --no-pager diff | head -160
+          git --no-pager diff --stat | tail -20
+          echo '--- the service edit ---'
+          git --no-pager diff -- feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/WMKeyboardService.kt | head -70
