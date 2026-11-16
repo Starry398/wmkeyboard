@@ -16,37 +16,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Dump the region the patch targets
+      - name: Show where the anchor sits
         run: |
           f=feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/WMKeyboardService.kt
-          echo "::group::existing declarations"
-          grep -n "fun hideWindow\|fun showWindow\|imeWindowPlatformSized\|windowBlurring" "$f" | head -40 || true
-          echo "::endgroup::"
-          n=$(grep -n "private fun fitImeWindowHeight" "$f" | head -1 | cut -d: -f1)
-          echo "fitImeWindowHeight at line $n"
-          if [ -n "$n" ]; then
-            echo "::group::lines $((n-16)) to $((n+16))"
-            sed -n "$((n-16)),$((n+16))p" "$f" | cat -A | sed 's/\$$//'
-            echo "::endgroup::"
-          fi
+          echo "lines: $(wc -l < "$f")"
+          grep -n "private fun fitImeWindowHeight\|fun hideWindow\|fun showWindow\|fullHeightWindow" "$f" | head -20 || true
 
-      - name: Apply every patch, dry run
+      - name: Verify the anchor
+        run: python3 starry/patch/apply.py --check
+
+      - name: Show the resulting diff (applied on a scratch copy)
         run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(starry/patch/*.patch)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No patches in starry/patch"; exit 0
-          fi
-          for p in "${files[@]}"; do
-            echo "::group::$p"
-            if git apply --check -v "$p"; then
-              echo "OK: git apply --check"
-            elif patch -p1 --dry-run --fuzz=3 < "$p"; then
-              echo "OK: patch -p1 --dry-run --fuzz=3"
-            else
-              echo "::error file=$p::the patch does not apply"
-              exit 1
-            fi
-            echo "::endgroup::"
-          done
+          f=feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/WMKeyboardService.kt
+          cp "$f" /tmp/before.kt
+          python3 starry/patch/apply.py
+          diff -u /tmp/before.kt "$f" || true

@@ -1,14 +1,12 @@
 name: Starry build (arm64)
 
+# Manual only: a push used to start a 40-minute build that the patch check
+# always failed first. Run it from the Actions tab once the anchor is green.
 on:
-  push:
-    paths:
-      - 'starry/patch/**'
-      - '.github/workflows/starry-build.yml'
   workflow_dispatch:
 
 concurrency:
-  group: starry-${{ github.ref }}
+  group: starry-build
   cancel-in-progress: true
 
 env:
@@ -24,17 +22,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Apply the patches
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(starry/patch/*.patch)
-          for p in "${files[@]}"; do
-            echo "::group::$p"
-            git apply -v "$p" || patch -p1 --fuzz=3 < "$p"
-            echo "::endgroup::"
-          done
-          git status --short
+      - name: Apply the fix by anchor
+        run: python3 starry/patch/apply.py
 
       - name: Set up JDK 21
         uses: actions/setup-java@v6
