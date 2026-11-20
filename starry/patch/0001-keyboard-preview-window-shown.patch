@@ -1,0 +1,89 @@
+diff --git a/app/src/main/java/com/wasimaster/wmkeyboard/app/KeyboardPreview.kt b/app/src/main/java/com/wasimaster/wmkeyboard/app/KeyboardPreview.kt
+index 01dfa52..80a663d 100644
+--- a/app/src/main/java/com/wasimaster/wmkeyboard/app/KeyboardPreview.kt
++++ b/app/src/main/java/com/wasimaster/wmkeyboard/app/KeyboardPreview.kt
+@@ -52,8 +52,10 @@ import androidx.compose.ui.res.stringResource
+ import androidx.compose.ui.text.input.TextFieldValue
+ import androidx.compose.ui.unit.dp
+ import androidx.core.view.WindowInsetsCompat
++import androidx.lifecycle.compose.collectAsStateWithLifecycle
+ import com.wasimaster.wmkeyboard.R
+ import com.wasimaster.wmkeyboard.ime.KeyboardAutomation
++import com.wasimaster.wmkeyboard.ime.KeyboardControls
+ import kotlinx.coroutines.delay
+ import kotlinx.coroutines.flow.collectLatest
+ import kotlinx.coroutines.flow.first
+@@ -205,8 +207,13 @@ internal fun KeyboardPreviewBar(state: KeyboardPreviewState) {
+     // hide key, the field has nothing left to show. Only once the keyboard has
+     // been seen up, or the field would close on the frame it opens. Where the
+     // window does not hand its insets down (Android 14 and older, which pan the
+-    // window instead) this never reads true, and the button closes the field.
+-    val imeVisible = WindowInsets.isImeVisible || windowIme > 0
++    // window instead) the insets never read true; the keyboard's own word on
++    // its window (same process) covers that, and so the floating and freeform
++    // windows that the system moves clear of the keyboard, which are never
++    // given a keyboard inset either and left the field stuck open after the
++    // keyboard was gone.
++    val keyboardWindowUp by KeyboardControls.windowShown.collectAsStateWithLifecycle()
++    val imeVisible = WindowInsets.isImeVisible || windowIme > 0 || keyboardWindowUp
+     var seen by remember { mutableStateOf(false) }
+     LaunchedEffect(imeVisible) {
+         if (imeVisible) seen = true else if (seen) state.open = false
+diff --git a/feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/KeyboardControls.kt b/feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/KeyboardControls.kt
+index 8437773..937069e 100644
+--- a/feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/KeyboardControls.kt
++++ b/feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/KeyboardControls.kt
+@@ -76,6 +76,25 @@ object KeyboardControls {
+         _upOverOwnApp.value = value
+     }
+ 
++    private val _windowShown = MutableStateFlow(false)
++
++    /**
++     * True while the keyboard's own window is on screen, as the keyboard
++     * itself last said. Same process, so a plain flow carries it.
++     *
++     * The settings app's keyboard test field closes with the keyboard. It used
++     * to learn that from the window's insets alone, and a floating or
++     * freeform window that the system moves clear of the keyboard is never
++     * handed a keyboard inset, so the field never saw the keyboard come and
++     * stayed open, stuck over the screen, after the keyboard had gone.
++     */
++    val windowShown: StateFlow<Boolean> = _windowShown.asStateFlow()
++
++    /** Set by the keyboard as its window shows and hides; see [windowShown]. */
++    fun setWindowShown(value: Boolean) {
++        _windowShown.value = value
++    }
++
+     /** Intent action: put the keyboard back on screen. */
+     const val ACTION_SHOW = "com.wasimaster.wmkeyboard.action.SHOW_KEYBOARD"
+ 
+diff --git a/feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/WMKeyboardService.kt b/feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/WMKeyboardService.kt
+index 8addb63..a9edf0e 100644
+--- a/feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/WMKeyboardService.kt
++++ b/feature/ime/src/main/java/com/wasimaster/wmkeyboard/ime/WMKeyboardService.kt
+@@ -11448,6 +11448,7 @@ open class WMKeyboardService : InputMethodService() {
+         if (arriving) floatingButtonDismissed = false
+         windowOnScreen = true
+         KeyboardPassthrough.setKeyboardShown(true)
++        KeyboardControls.setWindowShown(true)
+         syncSummonButton()
+         // A tool the floating button asked for while the keyboard was down,
+         // now that there is a keyboard for its panel (#755). Posted, not run
+@@ -11549,6 +11550,7 @@ open class WMKeyboardService : InputMethodService() {
+         // composition stops being handed new state — see [_shownState].
+         windowOnScreen = false
+         KeyboardPassthrough.setKeyboardShown(false)
++        KeyboardControls.setWindowShown(false)
+         keyguardWatchJob?.cancel()
+         forcedShowUp = false
+         lifecycleOwner.onStop()
+@@ -11774,6 +11776,7 @@ open class WMKeyboardService : InputMethodService() {
+         // they are three buttons that do nothing.
+         KeyboardControls.host = null
+         KeyboardControls.clear(this)
++        KeyboardControls.setWindowShown(false)
+         KeyboardAutomation.host = null
+         // So is the floating button: it is the keyboard's, and another one is
+         // in charge now.

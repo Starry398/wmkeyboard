@@ -1,15 +1,16 @@
 name: Starry build (arm64)
 
-# Manual only. base_sha checks out an older commit before the fix is applied:
-# upstream main has not compiled since 2026-11-11, and d30445fe (11-10) is the
-# last commit whose full CI was green. Leave it empty to build main's tip.
+# Manual only. base_sha checks out an older commit before the patch is applied.
+# The patch in starry/patch/ is a real git diff whose blobs match d30445fe
+# (2026-11-10), so that is the default; leave the input empty to build main's
+# tip, where apply.py will say whether the patch still lands.
 on:
   workflow_dispatch:
     inputs:
       base_sha:
         description: 'Commit to build (empty = main tip)'
         required: false
-        default: ''
+        default: 'd30445fe3974c0fc286aa8a77014264a1f48f123'
 
 concurrency:
   group: starry-build
@@ -41,7 +42,7 @@ jobs:
           cp -r /tmp/starry-backup starry
           git log -1 --format='building %h %s'
 
-      - name: Apply the fix by anchor
+      - name: Apply the patch
         run: python3 starry/patch/apply.py
 
       - name: Set up JDK 21
@@ -53,6 +54,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      # debug builds arm64 alone already (app/build.gradle.kts), and carries the
+      # debug signature, so it installs over a previous sideload without a
+      # keystore. The injected ABI is belt and braces.
       - name: Assemble
         run: ./gradlew assembleEnDebug -Pandroid.injected.build.abi=arm64-v8a --stacktrace
 
